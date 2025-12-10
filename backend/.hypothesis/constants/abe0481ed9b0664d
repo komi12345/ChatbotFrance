@@ -1,0 +1,4 @@
+# file: D:\projet chatbot france\backend\app\routers\monitoring.py
+# hypothesis_version: 6.148.2
+
+['/errors', '/history', '/monitoring', '/stats', 'Date (YYYY-MM-DD)', "Message d'erreur", 'Messages de type 1', 'Messages de type 2', 'Monitoring', "Nombre d'erreurs"]

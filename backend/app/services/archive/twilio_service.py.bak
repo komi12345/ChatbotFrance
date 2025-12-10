@@ -1,0 +1,772 @@
+"""
+Service Twilio WhatsApp Sandbox 2025 - Intégration avec Twilio API
+Remplace gupshup_service.py pour la migration vers Twilio Sandbox
+
+ARCHIVÉ: Ce service a été remplacé par wassenger_service.py lors de la migration
+vers Wassenger 2025. Conservé pour référence.
+
+Ce service gère :
+- L'envoi de messages texte via Twilio Sandbox
+- L'envoi de messages templates (Content SID)
+- Le parsing des webhooks Twilio
+- La validation des signatures webhook
+"""
+import json
+import logging
+from typing import Optional, Dict, Any, List
+from dataclasses import dataclass
+from datetime import datetime
+
+from twilio.rest import Client
+from twilio.request_validator import RequestValidator
+from twilio.base.exceptions import TwilioRestException
+
+from app.config import settings
+
+# Configuration du logger
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class TwilioResponse:
+    """
+    Réponse de l'API Twilio.
+    
+    Attributes:
+        success: Indique si la requête a réussi
+        message_sid: SID du message Twilio (si succès)
+        error_code: Code d'erreur Twilio (si échec)
+        error_message: Message d'erreur détaillé (si échec)
+        raw_response: Réponse brute de l'API pour debug
+    """
+    success: bool
+    message_sid: Optional[str] = None
+    error_code: Optional[int] = None
+    error_message: Optional[str] = None
+    raw_response: Optional[Dict[str, Any]] = None
+
+
+
+@dataclass
+class TwilioWebhookInteraction:
+    """
+    Interaction parsée depuis un webhook Twilio.
+    
+    Attributes:
+        contact_phone: Numéro de téléphone du contact (format +XXXXXXXXXXX)
+        interaction_type: Type d'interaction ('reply', 'delivered', 'read', 'failed', 'sent', 'queued')
+        content: Contenu du message (pour les réponses)
+        twilio_message_sid: SID du message Twilio
+        timestamp: Horodatage de l'interaction
+        error_code: Code d'erreur Twilio (si échec)
+    """
+    contact_phone: str
+    interaction_type: str
+    content: Optional[str] = None
+    twilio_message_sid: Optional[str] = None
+    timestamp: Optional[datetime] = None
+    error_code: Optional[int] = None
+
+
+# Codes d'erreur Twilio liés au Sandbox
+SANDBOX_NOT_JOINED_ERROR_CODES = [63007, 21608]
+SESSION_EXPIRED_ERROR_CODES = [63003, 63001]  # Session expirée ou fenêtre de 24h dépassée
+
+# Messages d'erreur utilisateur pour les codes d'erreur Twilio courants
+TWILIO_ERROR_MESSAGES = {
+    63007: "Le destinataire n'a pas rejoint le Sandbox Twilio. "
+           "Il doit envoyer 'join <code>' au +1 415 523 8886.",
+    21608: "Numéro non vérifié. En mode Sandbox, le destinataire "
+           "doit d'abord rejoindre le Sandbox.",
+    21211: "Numéro de téléphone invalide. Vérifiez le format.",
+    30006: "Ce numéro n'a pas WhatsApp installé.",
+    20003: "Erreur d'authentification. Vérifiez Account SID et Auth Token.",
+    63016: "Message trop long. Limitez à 1600 caractères.",
+    30003: "Destination injoignable. Réessayez plus tard.",
+    30005: "Destination inconnue. Vérifiez le numéro.",
+    63003: "La session WhatsApp a expiré (24h). Le destinataire doit renvoyer "
+           "un message ou rejoindre à nouveau le Sandbox.",
+    63001: "La fenêtre de conversation de 24h est dépassée. Le destinataire "
+           "doit initier une nouvelle conversation.",
+}
+
+# Instructions détaillées pour rejoindre le Sandbox
+SANDBOX_JOIN_INSTRUCTIONS = """
+Pour rejoindre le Sandbox Twilio WhatsApp:
+
+1. Ouvrez WhatsApp sur votre téléphone
+2. Envoyez le message suivant au numéro +1 415 523 8886:
+   "join <votre-code-sandbox>"
+3. Attendez la confirmation de Twilio
+4. Vous pouvez maintenant recevoir des messages de test
+
+Note: Le code de join est unique à votre compte Twilio Sandbox.
+Consultez votre dashboard Twilio pour obtenir le code exact.
+"""
+
+# Instructions pour la session expirée
+SESSION_EXPIRED_INSTRUCTIONS = """
+La session WhatsApp Sandbox a expiré (limite de 24h).
+
+Pour réactiver la session:
+1. Le destinataire doit envoyer un message au numéro Sandbox +1 415 523 8886
+2. Ou renvoyer le code de join: "join <votre-code-sandbox>"
+3. Une fois la session réactivée, vous pourrez envoyer des messages
+
+Note: En mode Sandbox, les sessions expirent après 24h d'inactivité.
+"""
+
+
+class TwilioService:
+    """
+    Service pour l'intégration avec Twilio WhatsApp Sandbox 2025.
+    Interface compatible avec l'ancien GupshupService pour faciliter la migration.
+    
+    Différences clés avec Gupshup:
+    - Authentification via Basic Auth (Account SID:Auth Token)
+    - SDK Python officiel (twilio-python)
+    - Format numéro: whatsapp:+XXXXXXXXXXX
+    - Numéro source: Sandbox partagé (+14155238886)
+    - Rate limit Sandbox: 1 msg/3s
+    """
+    
+    SANDBOX_NUMBER = "+14155238886"
+    
+    def __init__(self):
+        """
+        Initialise le service avec les paramètres de configuration.
+        
+        Requirements: 1.4, 2.1
+        """
+        self.account_sid = settings.TWILIO_ACCOUNT_SID
+        self.auth_token = settings.TWILIO_AUTH_TOKEN
+        self.sandbox_number = settings.TWILIO_SANDBOX_NUMBER or self.SANDBOX_NUMBER
+        self.webhook_base_url = settings.TWILIO_WEBHOOK_BASE_URL
+        
+        # Initialiser le client Twilio
+        self.client = Client(self.account_sid, self.auth_token)
+        
+        # Initialiser le validateur de signature webhook
+        self.validator = RequestValidator(self.auth_token)
+        
+        logger.info(
+            "Service Twilio initialisé",
+            extra={
+                "sandbox_number": self.sandbox_number,
+                "account_sid_prefix": self.account_sid[:8] + "..." if self.account_sid else "N/A"
+            }
+        )
+
+
+    @staticmethod
+    def is_sandbox_not_joined_error(error_code: Optional[int]) -> bool:
+        """
+        Vérifie si le code d'erreur indique que le destinataire n'a pas rejoint le Sandbox.
+        
+        Args:
+            error_code: Code d'erreur Twilio
+        
+        Returns:
+            True si l'erreur est liée à un destinataire non inscrit au Sandbox
+        
+        Requirements: 7.1, 7.5
+        """
+        if error_code is None:
+            return False
+        return error_code in SANDBOX_NOT_JOINED_ERROR_CODES
+    
+    @staticmethod
+    def is_session_expired_error(error_code: Optional[int]) -> bool:
+        """
+        Vérifie si le code d'erreur indique que la session Sandbox a expiré (24h).
+        
+        Args:
+            error_code: Code d'erreur Twilio
+        
+        Returns:
+            True si l'erreur est liée à une session expirée
+        
+        Requirements: 7.3
+        """
+        if error_code is None:
+            return False
+        return error_code in SESSION_EXPIRED_ERROR_CODES
+    
+    @staticmethod
+    def get_sandbox_error_details(error_code: Optional[int]) -> Dict[str, Any]:
+        """
+        Retourne les détails complets d'une erreur Sandbox avec instructions.
+        
+        Args:
+            error_code: Code d'erreur Twilio
+        
+        Returns:
+            Dictionnaire avec:
+            - error_type: Type d'erreur ('not_joined', 'session_expired', 'other')
+            - message: Message d'erreur utilisateur
+            - instructions: Instructions détaillées pour résoudre le problème
+            - is_sandbox_error: True si c'est une erreur spécifique au Sandbox
+        
+        Requirements: 7.1, 7.3, 7.5
+        """
+        result = {
+            "error_type": "other",
+            "message": TWILIO_ERROR_MESSAGES.get(error_code, f"Erreur Twilio: {error_code}"),
+            "instructions": None,
+            "is_sandbox_error": False,
+            "error_code": error_code
+        }
+        
+        if error_code in SANDBOX_NOT_JOINED_ERROR_CODES:
+            result["error_type"] = "not_joined"
+            result["instructions"] = SANDBOX_JOIN_INSTRUCTIONS
+            result["is_sandbox_error"] = True
+        elif error_code in SESSION_EXPIRED_ERROR_CODES:
+            result["error_type"] = "session_expired"
+            result["instructions"] = SESSION_EXPIRED_INSTRUCTIONS
+            result["is_sandbox_error"] = True
+        
+        return result
+
+    def format_whatsapp_number(self, phone: str) -> str:
+        """
+        Formate le numéro de téléphone pour Twilio WhatsApp.
+        Format: whatsapp:+XXXXXXXXXXX
+        
+        Args:
+            phone: Numéro de téléphone (avec ou sans +, avec ou sans préfixe whatsapp:)
+        
+        Returns:
+            Numéro au format whatsapp:+XXXXXXXXXXX
+        
+        Requirements: 2.2
+        """
+        # Nettoyer le numéro
+        clean_phone = phone.strip()
+        
+        # Si déjà au format whatsapp:, extraire le numéro
+        if clean_phone.lower().startswith("whatsapp:"):
+            clean_phone = clean_phone[9:]  # Retirer "whatsapp:"
+        
+        # Nettoyer les espaces et caractères non numériques (sauf +)
+        clean_phone = clean_phone.strip()
+        
+        # Ajouter le + si absent
+        if not clean_phone.startswith("+"):
+            clean_phone = f"+{clean_phone}"
+        
+        return f"whatsapp:{clean_phone}"
+    
+    def extract_phone_from_whatsapp(self, whatsapp_number: str) -> str:
+        """
+        Extrait le numéro de téléphone du format WhatsApp Twilio.
+        whatsapp:+33612345678 -> +33612345678
+        
+        Args:
+            whatsapp_number: Numéro au format whatsapp:+XXXXXXXXXXX
+        
+        Returns:
+            Numéro au format +XXXXXXXXXXX
+        
+        Requirements: 2.2
+        """
+        if whatsapp_number.lower().startswith("whatsapp:"):
+            return whatsapp_number[9:]  # Retirer "whatsapp:"
+        return whatsapp_number
+
+
+    async def send_message(
+        self,
+        phone: str,
+        text: str
+    ) -> TwilioResponse:
+        """
+        Envoie un message WhatsApp via Twilio Sandbox.
+        
+        Args:
+            phone: Numéro de téléphone du destinataire
+            text: Contenu du message texte
+        
+        Returns:
+            TwilioResponse avec le résultat de l'envoi
+        
+        Requirements: 2.3, 2.4, 2.5, 2.6
+        """
+        try:
+            # Formater les numéros au format Twilio WhatsApp
+            to_number = self.format_whatsapp_number(phone)
+            from_number = self.format_whatsapp_number(self.sandbox_number)
+            
+            logger.info(
+                f"Envoi message Twilio à {to_number}",
+                extra={
+                    "to": to_number,
+                    "from": from_number,
+                    "text_length": len(text)
+                }
+            )
+            
+            # Envoyer le message via le SDK Twilio
+            message = self.client.messages.create(
+                body=text,
+                from_=from_number,
+                to=to_number
+            )
+            
+            logger.info(
+                f"Message Twilio envoyé avec succès, SID: {message.sid}",
+                extra={
+                    "message_sid": message.sid,
+                    "status": message.status
+                }
+            )
+            
+            return TwilioResponse(
+                success=True,
+                message_sid=message.sid,
+                raw_response={
+                    "sid": message.sid,
+                    "status": message.status,
+                    "date_created": str(message.date_created) if message.date_created else None
+                }
+            )
+            
+        except TwilioRestException as e:
+            # Récupérer les détails de l'erreur avec instructions si applicable
+            error_details = self.get_sandbox_error_details(e.code)
+            user_message = error_details["message"]
+            
+            # Log avec niveau approprié selon le type d'erreur
+            if error_details["is_sandbox_error"]:
+                logger.warning(
+                    f"Erreur Sandbox Twilio ({error_details['error_type']}): {e.code} - {e.msg}",
+                    extra={
+                        "error_code": e.code,
+                        "error_type": error_details["error_type"],
+                        "error_message": e.msg,
+                        "phone": phone,
+                        "is_sandbox_error": True
+                    }
+                )
+            else:
+                logger.error(
+                    f"Erreur API Twilio: {e.code} - {e.msg}",
+                    extra={
+                        "error_code": e.code,
+                        "error_message": e.msg,
+                        "phone": phone
+                    }
+                )
+            
+            return TwilioResponse(
+                success=False,
+                error_code=e.code,
+                error_message=user_message,
+                raw_response={
+                    "error_type": error_details["error_type"],
+                    "is_sandbox_error": error_details["is_sandbox_error"],
+                    "instructions": error_details["instructions"]
+                }
+            )
+            
+        except Exception as e:
+            logger.exception(
+                f"Erreur inattendue lors de l'envoi du message Twilio: {str(e)}",
+                extra={"phone": phone}
+            )
+            
+            return TwilioResponse(
+                success=False,
+                error_code=None,
+                error_message=f"Erreur inattendue: {str(e)}"
+            )
+
+
+    def validate_webhook_signature(
+        self,
+        url: str,
+        params: Dict[str, str],
+        signature: str
+    ) -> bool:
+        """
+        Valide la signature d'un webhook Twilio.
+        
+        Args:
+            url: URL complète du webhook
+            params: Paramètres du webhook (form data)
+            signature: Signature X-Twilio-Signature
+        
+        Returns:
+            True si la signature est valide, False sinon
+        
+        Requirements: 4.1
+        """
+        return self.validator.validate(url, params, signature)
+    
+    def parse_webhook_payload(
+        self,
+        payload: Dict[str, Any]
+    ) -> List[TwilioWebhookInteraction]:
+        """
+        Parse le payload d'un webhook Twilio pour extraire les interactions.
+        
+        Twilio envoie deux types de webhooks:
+        
+        1. Message entrant:
+        {
+            "From": "whatsapp:+33612345678",
+            "Body": "message du client",
+            "MessageSid": "SMxxxxxxxx...",
+            "To": "whatsapp:+14155238886"
+        }
+        
+        2. Statut de livraison:
+        {
+            "MessageSid": "SMxxxxxxxx...",
+            "MessageStatus": "delivered" | "read" | "failed" | "sent" | "queued",
+            "To": "whatsapp:+33612345678",
+            "ErrorCode": "63007" (si échec)
+        }
+        
+        Args:
+            payload: Payload du webhook Twilio (form data)
+        
+        Returns:
+            Liste des interactions extraites
+        
+        Requirements: 4.2, 5.1
+        """
+        interactions = []
+        
+        try:
+            # Détecter le type de webhook
+            message_status = payload.get("MessageStatus")
+            
+            if message_status:
+                # Webhook de statut de livraison
+                interaction = self._parse_status_webhook(payload)
+                if interaction:
+                    interactions.append(interaction)
+            else:
+                # Webhook de message entrant
+                interaction = self._parse_message_webhook(payload)
+                if interaction:
+                    interactions.append(interaction)
+            
+            logger.info(
+                f"Webhook Twilio parsé: {len(interactions)} interaction(s) extraite(s)",
+                extra={"has_status": bool(message_status)}
+            )
+            
+        except Exception as e:
+            logger.exception(
+                f"Erreur lors du parsing du webhook Twilio: {str(e)}",
+                extra={"payload": payload}
+            )
+        
+        return interactions
+
+
+    def _parse_message_webhook(self, payload: Dict[str, Any]) -> Optional[TwilioWebhookInteraction]:
+        """
+        Parse un webhook de message entrant Twilio.
+        
+        Args:
+            payload: Payload du webhook message
+        
+        Returns:
+            TwilioWebhookInteraction ou None si le parsing échoue
+        
+        Requirements: 4.2
+        """
+        try:
+            # Extraire les champs du webhook
+            from_number = payload.get("From", "")
+            body = payload.get("Body", "")
+            message_sid = payload.get("MessageSid", "")
+            
+            # Extraire le numéro de téléphone (retirer le préfixe whatsapp:)
+            contact_phone = self.extract_phone_from_whatsapp(from_number)
+            
+            return TwilioWebhookInteraction(
+                contact_phone=contact_phone,
+                interaction_type="reply",
+                content=body,
+                twilio_message_sid=message_sid,
+                timestamp=datetime.utcnow()
+            )
+            
+        except Exception as e:
+            logger.error(
+                f"Erreur parsing webhook message Twilio: {str(e)}",
+                extra={"payload": payload}
+            )
+            return None
+    
+    def _parse_status_webhook(self, payload: Dict[str, Any]) -> Optional[TwilioWebhookInteraction]:
+        """
+        Parse un webhook de statut de livraison Twilio.
+        
+        Args:
+            payload: Payload du webhook statut
+        
+        Returns:
+            TwilioWebhookInteraction ou None si le parsing échoue
+        
+        Requirements: 5.1
+        """
+        try:
+            # Extraire les champs du webhook
+            message_sid = payload.get("MessageSid", "")
+            message_status = payload.get("MessageStatus", "").lower()
+            to_number = payload.get("To", "")
+            error_code_str = payload.get("ErrorCode")
+            
+            # Convertir le code d'erreur en int si présent
+            error_code = int(error_code_str) if error_code_str else None
+            
+            # Mapper les statuts Twilio vers nos types d'interaction
+            # Twilio: queued, sent, delivered, read, failed, undelivered
+            status_map = {
+                "queued": "queued",
+                "sent": "sent",
+                "delivered": "delivered",
+                "read": "read",
+                "failed": "failed",
+                "undelivered": "failed",
+            }
+            
+            interaction_type = status_map.get(message_status)
+            
+            if not interaction_type:
+                logger.debug(f"Statut Twilio ignoré: {message_status}")
+                return None
+            
+            # Extraire le numéro de téléphone (retirer le préfixe whatsapp:)
+            contact_phone = self.extract_phone_from_whatsapp(to_number)
+            
+            return TwilioWebhookInteraction(
+                contact_phone=contact_phone,
+                interaction_type=interaction_type,
+                twilio_message_sid=message_sid,
+                timestamp=datetime.utcnow(),
+                error_code=error_code
+            )
+            
+        except Exception as e:
+            logger.error(
+                f"Erreur parsing webhook statut Twilio: {str(e)}",
+                extra={"payload": payload}
+            )
+            return None
+
+    def validate_template_parameters(
+        self,
+        content_sid: str,
+        parameters: Optional[List[str]],
+        required_count: int
+    ) -> tuple[bool, Optional[str]]:
+        """
+        Valide que tous les paramètres requis pour un template sont fournis.
+        
+        Args:
+            content_sid: SID du template Content
+            parameters: Liste des paramètres fournis
+            required_count: Nombre de paramètres requis par le template
+        
+        Returns:
+            Tuple (is_valid, error_message)
+        
+        Requirements: 3.4, 3.5
+        """
+        if parameters is None:
+            parameters = []
+        
+        actual_count = len(parameters)
+        
+        if actual_count < required_count:
+            error_msg = (
+                f"Le template {content_sid} requiert {required_count} paramètre(s), "
+                f"mais seulement {actual_count} ont été fournis."
+            )
+            logger.warning(
+                f"Validation template échouée: {error_msg}",
+                extra={
+                    "content_sid": content_sid,
+                    "required": required_count,
+                    "provided": actual_count
+                }
+            )
+            return False, error_msg
+        
+        return True, None
+
+    def encode_content_variables(self, parameters: List[str]) -> str:
+        """
+        Encode les paramètres de template au format JSON pour ContentVariables.
+        
+        Twilio attend un format JSON avec des clés numériques:
+        {"1": "valeur1", "2": "valeur2", ...}
+        
+        Args:
+            parameters: Liste des valeurs de paramètres
+        
+        Returns:
+            Chaîne JSON encodée
+        
+        Requirements: 3.2
+        """
+        if not parameters:
+            return "{}"
+        
+        # Créer un dictionnaire avec des clés numériques (1-indexed)
+        variables = {str(i + 1): param for i, param in enumerate(parameters)}
+        return json.dumps(variables)
+
+    async def send_template_message(
+        self,
+        phone: str,
+        content_sid: str,
+        parameters: Optional[List[str]] = None,
+        required_param_count: Optional[int] = None
+    ) -> TwilioResponse:
+        """
+        Envoie un message template WhatsApp via Twilio Sandbox.
+        
+        Les templates Twilio utilisent des Content SID pour identifier les
+        templates pré-approuvés. Les paramètres sont passés via ContentVariables
+        au format JSON.
+        
+        Args:
+            phone: Numéro de téléphone du destinataire
+            content_sid: SID du template Content Twilio (ex: HXxxxxxxxx)
+            parameters: Liste des valeurs pour les variables du template
+            required_param_count: Nombre de paramètres requis (pour validation)
+        
+        Returns:
+            TwilioResponse avec le résultat de l'envoi
+        
+        Requirements: 3.1, 3.2, 3.3, 3.4, 3.5
+        
+        Exemple d'utilisation:
+            # Template "Your {{1}} code is {{2}}"
+            response = await twilio_service.send_template_message(
+                phone="+33612345678",
+                content_sid="HXb5b62575e6e4ff6129ad7c8efe1f983e",
+                parameters=["verification", "123456"],
+                required_param_count=2
+            )
+        """
+        try:
+            # Valider les paramètres si un nombre requis est spécifié
+            if required_param_count is not None:
+                is_valid, error_msg = self.validate_template_parameters(
+                    content_sid, parameters, required_param_count
+                )
+                if not is_valid:
+                    return TwilioResponse(
+                        success=False,
+                        error_code=None,
+                        error_message=error_msg
+                    )
+            
+            # Formater les numéros au format Twilio WhatsApp
+            to_number = self.format_whatsapp_number(phone)
+            from_number = self.format_whatsapp_number(self.sandbox_number)
+            
+            # Encoder les paramètres en JSON pour ContentVariables
+            content_variables = self.encode_content_variables(parameters or [])
+            
+            logger.info(
+                f"Envoi template Twilio à {to_number}",
+                extra={
+                    "to": to_number,
+                    "from": from_number,
+                    "content_sid": content_sid,
+                    "parameters_count": len(parameters) if parameters else 0
+                }
+            )
+            
+            # Envoyer le message template via le SDK Twilio
+            message = self.client.messages.create(
+                from_=from_number,
+                to=to_number,
+                content_sid=content_sid,
+                content_variables=content_variables
+            )
+            
+            logger.info(
+                f"Template Twilio envoyé avec succès, SID: {message.sid}",
+                extra={
+                    "message_sid": message.sid,
+                    "status": message.status,
+                    "content_sid": content_sid
+                }
+            )
+            
+            return TwilioResponse(
+                success=True,
+                message_sid=message.sid,
+                raw_response={
+                    "sid": message.sid,
+                    "status": message.status,
+                    "content_sid": content_sid,
+                    "date_created": str(message.date_created) if message.date_created else None
+                }
+            )
+            
+        except TwilioRestException as e:
+            # Récupérer les détails de l'erreur avec instructions si applicable
+            error_details = self.get_sandbox_error_details(e.code)
+            user_message = error_details["message"]
+            
+            # Log avec niveau approprié selon le type d'erreur
+            if error_details["is_sandbox_error"]:
+                logger.warning(
+                    f"Erreur Sandbox Twilio (template, {error_details['error_type']}): {e.code} - {e.msg}",
+                    extra={
+                        "error_code": e.code,
+                        "error_type": error_details["error_type"],
+                        "error_message": e.msg,
+                        "phone": phone,
+                        "content_sid": content_sid,
+                        "is_sandbox_error": True
+                    }
+                )
+            else:
+                logger.error(
+                    f"Erreur API Twilio (template): {e.code} - {e.msg}",
+                    extra={
+                        "error_code": e.code,
+                        "error_message": e.msg,
+                        "phone": phone,
+                        "content_sid": content_sid
+                    }
+                )
+            
+            return TwilioResponse(
+                success=False,
+                error_code=e.code,
+                error_message=user_message,
+                raw_response={
+                    "error_type": error_details["error_type"],
+                    "is_sandbox_error": error_details["is_sandbox_error"],
+                    "instructions": error_details["instructions"]
+                }
+            )
+            
+        except Exception as e:
+            logger.exception(
+                f"Erreur inattendue lors de l'envoi du template Twilio: {str(e)}",
+                extra={"phone": phone, "content_sid": content_sid}
+            )
+            
+            return TwilioResponse(
+                success=False,
+                error_code=None,
+                error_message=f"Erreur inattendue: {str(e)}"
+            )
+
+
+# Instance singleton du service (ARCHIVÉ - Ne pas utiliser)
+# twilio_service = TwilioService()

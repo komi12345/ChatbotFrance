@@ -1,0 +1,4 @@
+# file: D:\projet chatbot france\backend\app\routers\users.py
+# hypothesis_version: 6.148.2
+
+[100, '/users', '/{user_id}', 'Filtrer par rôle', 'Recherche par email', 'created_at', 'email', 'id', 'is_active', 'password_hash', 'role', 'updated_at']

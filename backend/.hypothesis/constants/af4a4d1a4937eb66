@@ -1,0 +1,4 @@
+# file: D:\projet chatbot france\backend\app\routers\categories.py
+# hypothesis_version: 6.148.2
+
+[100, '/categories', '/{category_id}', 'Catégories', 'Contact non trouvé', 'Numéro de page', 'Recherche par nom', 'color', 'created_at', 'created_by', 'id', 'items', 'name', 'page', 'pages', 'size', 'total', 'updated_at']

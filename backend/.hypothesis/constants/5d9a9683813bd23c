@@ -1,0 +1,4 @@
+# file: D:\projet chatbot france\backend\app\routers\campaigns.py
+# hypothesis_version: 6.148.2
+
+[0.0, 100, '/campaigns', '/{campaign_id}', '/{campaign_id}/retry', '/{campaign_id}/send', '/{campaign_id}/stats', '/{campaign_id}/stop', 'Campagne non trouvée', 'Campaigns', 'Filtrer par statut', 'Numéro de page', 'campaign_id', 'cancelled_messages', 'completed', 'completed_at', 'contact_id', 'content', 'created_at', 'created_by', 'delivered', 'delivered_count', 'draft', 'error_message', 'failed', 'failed_count', 'id', 'items', 'message', 'message_1', 'message_2', 'message_type', 'messages', 'name', 'page', 'pages', 'pending', 'read', 'read_count', 'retry_count', 'scheduled_at', 'sending', 'sent', 'sent_count', 'size', 'status', 'success', 'template_name', 'total', 'total_messages', 'total_recipients', 'updated_at']

@@ -1,0 +1,4 @@
+# file: D:\projet chatbot france\backend\app\routers\auth.py
+# hypothesis_version: 6.148.2
+
+['/auth', '/login', '/login/form', '/me', '/refresh', 'Authentification', 'Bearer', 'WWW-Authenticate', 'bearer', 'created_at', 'email', 'id', 'is_active', 'password_hash', 'role', 'updated_at', 'user_id']

@@ -1,0 +1,4 @@
+# file: D:\projet chatbot france\backend\app\config.py
+# hypothesis_version: 6.148.2
+
+[100, 8000, '+14155238886', ',', '.env', '/api', '0.0.0.0', 'HS256', 'TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'WASSENGER_API_KEY', 'WASSENGER_DEVICE_ID', 'development', 'utf-8', 'v18.0']

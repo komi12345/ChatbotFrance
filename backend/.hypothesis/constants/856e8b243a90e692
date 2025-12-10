@@ -1,0 +1,4 @@
+# file: D:\projet chatbot france\backend\app\routers\contacts.py
+# hypothesis_version: 6.148.2
+
+[10000, '.csv', '/contacts', '/export', '/import', '/{contact_id}', 'Contact non trouvé', 'Contacts', 'Content-Disposition', 'Numéro de page', 'all', 'country_code', 'created_at', 'created_by', 'first_name', 'full_number', 'id', 'items', 'last_name', 'latin-1', 'not_whatsapp', 'page', 'pages', 'pending', 'phone_number', 'size', 'text/csv', 'total', 'updated_at', 'utf-8', 'verified', 'verified_at', 'whatsapp_verified']

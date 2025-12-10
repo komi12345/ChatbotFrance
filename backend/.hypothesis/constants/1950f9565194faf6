@@ -1,0 +1,4 @@
+# file: D:\projet chatbot france\backend\app\utils\validators.py
+# hypothesis_version: 6.148.2
+
+['+', '-', '.', "L'URL est requise", '^wa\\.me/\\d+$']

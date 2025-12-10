@@ -1,0 +1,4 @@
+# file: D:\projet chatbot france\backend\app\schemas\auth.py
+# hypothesis_version: 6.148.2
+
+['bearer', 'email']

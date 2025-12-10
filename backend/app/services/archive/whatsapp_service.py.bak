@@ -1,0 +1,339 @@
+"""
+Service WhatsApp Business API - Intégration avec Meta Cloud API
+Gère l'envoi de messages et la réception de webhooks
+
+ARCHIVÉ: Ce fichier a été archivé suite à la migration vers Gupshup API 2025.
+Voir twilio_service.py pour la nouvelle implémentation (migration Twilio Sandbox 2025).
+Date d'archivage: 2025-12-01
+"""
+import logging
+import httpx
+from typing import Optional, Dict, Any, List
+from dataclasses import dataclass
+from datetime import datetime
+
+from app.config import settings
+
+# Configuration du logger
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class WhatsAppResponse:
+    """Réponse de l'API WhatsApp"""
+    success: bool
+    message_id: Optional[str] = None
+    error_code: Optional[str] = None
+    error_message: Optional[str] = None
+    raw_response: Optional[Dict[str, Any]] = None
+
+
+@dataclass
+class WebhookInteraction:
+    """Interaction parsée depuis un webhook WhatsApp"""
+    contact_phone: str
+    interaction_type: str  # 'reply', 'reaction', 'read', 'delivered'
+    content: Optional[str] = None
+    whatsapp_message_id: Optional[str] = None
+    original_message_id: Optional[str] = None
+    timestamp: Optional[datetime] = None
+
+
+class WhatsAppService:
+    """
+    Service pour l'intégration avec WhatsApp Business API (Meta Cloud API).
+    Gère l'envoi de messages templates et texte libre, ainsi que les webhooks.
+    """
+    
+    def __init__(self):
+        self.phone_number_id = settings.WHATSAPP_PHONE_NUMBER_ID
+        self.access_token = settings.WHATSAPP_ACCESS_TOKEN
+        self.api_version = settings.WHATSAPP_API_VERSION
+        self.webhook_verify_token = settings.WHATSAPP_WEBHOOK_VERIFY_TOKEN
+        self.base_url = f"https://graph.facebook.com/{self.api_version}"
+    
+    @property
+    def messages_url(self) -> str:
+        """URL de l'endpoint messages"""
+        return f"{self.base_url}/{self.phone_number_id}/messages"
+    
+    @property
+    def headers(self) -> Dict[str, str]:
+        """Headers pour les requêtes API"""
+        return {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json",
+        }
+
+    async def send_template_message(
+        self,
+        phone: str,
+        template_name: str,
+        language_code: str = "fr",
+        components: Optional[List[Dict[str, Any]]] = None
+    ) -> WhatsAppResponse:
+        """
+        Envoie un message template WhatsApp (Message 1).
+        """
+        payload = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": phone,
+            "type": "template",
+            "template": {
+                "name": template_name,
+                "language": {
+                    "code": language_code
+                }
+            }
+        }
+        
+        if components:
+            payload["template"]["components"] = components
+        
+        logger.info(f"Envoi template '{template_name}' à {phone}")
+        
+        return await self._send_request(payload)
+    
+    async def send_text_message(
+        self,
+        phone: str,
+        text: str,
+        preview_url: bool = True
+    ) -> WhatsAppResponse:
+        """
+        Envoie un message texte libre WhatsApp (Message 2).
+        """
+        payload = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": phone,
+            "type": "text",
+            "text": {
+                "preview_url": preview_url,
+                "body": text
+            }
+        }
+        
+        logger.info(f"Envoi message texte à {phone}")
+        
+        return await self._send_request(payload)
+    
+    async def _send_request(self, payload: Dict[str, Any]) -> WhatsAppResponse:
+        """
+        Envoie une requête à l'API WhatsApp.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    self.messages_url,
+                    headers=self.headers,
+                    json=payload
+                )
+                
+                response_data = response.json()
+                
+                if response.status_code == 200:
+                    message_id = None
+                    if "messages" in response_data and len(response_data["messages"]) > 0:
+                        message_id = response_data["messages"][0].get("id")
+                    
+                    logger.info(f"Message envoyé avec succès, ID: {message_id}")
+                    
+                    return WhatsAppResponse(
+                        success=True,
+                        message_id=message_id,
+                        raw_response=response_data
+                    )
+                else:
+                    error = response_data.get("error", {})
+                    error_code = str(error.get("code", "unknown"))
+                    error_message = error.get("message", "Erreur inconnue")
+                    
+                    logger.error(
+                        f"Erreur API WhatsApp: {error_code} - {error_message}",
+                        extra={
+                            "status_code": response.status_code,
+                            "error_code": error_code,
+                            "error_message": error_message,
+                            "response": response_data
+                        }
+                    )
+                    
+                    return WhatsAppResponse(
+                        success=False,
+                        error_code=error_code,
+                        error_message=error_message,
+                        raw_response=response_data
+                    )
+                    
+        except httpx.TimeoutException as e:
+            logger.error(f"Timeout lors de l'envoi du message: {str(e)}")
+            return WhatsAppResponse(
+                success=False,
+                error_code="timeout",
+                error_message="La requête a expiré"
+            )
+        except httpx.RequestError as e:
+            logger.error(f"Erreur réseau lors de l'envoi du message: {str(e)}")
+            return WhatsAppResponse(
+                success=False,
+                error_code="network_error",
+                error_message=str(e)
+            )
+        except Exception as e:
+            logger.exception(f"Erreur inattendue lors de l'envoi du message: {str(e)}")
+            return WhatsAppResponse(
+                success=False,
+                error_code="internal_error",
+                error_message=str(e)
+            )
+
+    def verify_webhook(self, mode: str, token: str, challenge: str) -> Optional[str]:
+        """
+        Vérifie le webhook lors de la configuration initiale par Meta.
+        """
+        if mode == "subscribe" and token == self.webhook_verify_token:
+            logger.info("Webhook vérifié avec succès")
+            return challenge
+        
+        logger.warning(
+            f"Échec de vérification webhook: mode={mode}, token_match={token == self.webhook_verify_token}"
+        )
+        return None
+    
+    def parse_webhook_payload(self, payload: Dict[str, Any]) -> List[WebhookInteraction]:
+        """
+        Parse le payload d'un webhook WhatsApp pour extraire les interactions.
+        """
+        interactions = []
+        
+        try:
+            if payload.get("object") != "whatsapp_business_account":
+                logger.warning(f"Type d'objet webhook inattendu: {payload.get('object')}")
+                return interactions
+            
+            for entry in payload.get("entry", []):
+                for change in entry.get("changes", []):
+                    value = change.get("value", {})
+                    
+                    for message in value.get("messages", []):
+                        interaction = self._parse_message(message, value)
+                        if interaction:
+                            interactions.append(interaction)
+                    
+                    for status in value.get("statuses", []):
+                        interaction = self._parse_status(status)
+                        if interaction:
+                            interactions.append(interaction)
+            
+            logger.info(f"Webhook parsé: {len(interactions)} interaction(s) extraite(s)")
+            
+        except Exception as e:
+            logger.exception(f"Erreur lors du parsing du webhook: {str(e)}")
+        
+        return interactions
+    
+    def _parse_message(
+        self,
+        message: Dict[str, Any],
+        value: Dict[str, Any]
+    ) -> Optional[WebhookInteraction]:
+        """
+        Parse un message reçu depuis le webhook.
+        """
+        try:
+            message_type = message.get("type")
+            contact_phone = message.get("from")
+            message_id = message.get("id")
+            timestamp = message.get("timestamp")
+            
+            dt_timestamp = None
+            if timestamp:
+                dt_timestamp = datetime.fromtimestamp(int(timestamp))
+            
+            interaction_type = "reply"
+            content = None
+            
+            if message_type == "text":
+                content = message.get("text", {}).get("body")
+            elif message_type == "reaction":
+                interaction_type = "reaction"
+                reaction = message.get("reaction", {})
+                content = reaction.get("emoji")
+            elif message_type == "image":
+                content = "[Image reçue]"
+            elif message_type == "audio":
+                content = "[Audio reçu]"
+            elif message_type == "video":
+                content = "[Vidéo reçue]"
+            elif message_type == "document":
+                content = "[Document reçu]"
+            elif message_type == "sticker":
+                content = "[Sticker reçu]"
+            elif message_type == "location":
+                content = "[Localisation reçue]"
+            elif message_type == "contacts":
+                content = "[Contact(s) reçu(s)]"
+            else:
+                content = f"[{message_type}]"
+            
+            original_message_id = None
+            if message_type == "reaction":
+                original_message_id = message.get("reaction", {}).get("message_id")
+            elif "context" in message:
+                original_message_id = message.get("context", {}).get("id")
+            
+            return WebhookInteraction(
+                contact_phone=contact_phone,
+                interaction_type=interaction_type,
+                content=content,
+                whatsapp_message_id=message_id,
+                original_message_id=original_message_id,
+                timestamp=dt_timestamp
+            )
+            
+        except Exception as e:
+            logger.error(f"Erreur parsing message webhook: {str(e)}")
+            return None
+    
+    def _parse_status(self, status: Dict[str, Any]) -> Optional[WebhookInteraction]:
+        """
+        Parse un statut de message depuis le webhook.
+        """
+        try:
+            status_type = status.get("status")
+            recipient_id = status.get("recipient_id")
+            message_id = status.get("id")
+            timestamp = status.get("timestamp")
+            
+            dt_timestamp = None
+            if timestamp:
+                dt_timestamp = datetime.fromtimestamp(int(timestamp))
+            
+            interaction_type_map = {
+                "sent": None,
+                "delivered": "delivered",
+                "read": "read",
+                "failed": None,
+            }
+            
+            interaction_type = interaction_type_map.get(status_type)
+            
+            if not interaction_type:
+                return None
+            
+            return WebhookInteraction(
+                contact_phone=recipient_id,
+                interaction_type=interaction_type,
+                whatsapp_message_id=message_id,
+                timestamp=dt_timestamp
+            )
+            
+        except Exception as e:
+            logger.error(f"Erreur parsing statut webhook: {str(e)}")
+            return None
+
+
+# Instance singleton du service
+whatsapp_service = WhatsAppService()

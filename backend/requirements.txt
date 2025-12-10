@@ -1,0 +1,45 @@
+# FastAPI et serveur
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.6
+
+# Supabase Client (remplace SQLAlchemy pour la connexion DB)
+supabase>=2.3.4
+
+# Validation et configuration
+pydantic>=2.5.3
+pydantic-settings>=2.1.0
+python-dotenv>=1.0.0
+
+# Authentification et sécurité
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+bcrypt>=4.1.2
+
+# Tâches asynchrones (optionnel pour l'envoi de messages)
+celery>=5.3.6
+redis>=5.0.1
+
+# HTTP Client (pour WhatsApp API - Wassenger 2025)
+httpx>=0.26.0
+aiohttp>=3.9.1
+
+# Twilio WhatsApp Sandbox API (DÉPRÉCIÉ - Remplacé par Wassenger 2025)
+# La dépendance twilio est conservée commentée pour référence
+# twilio>=9.0.0
+
+# Rate limiting
+slowapi>=0.1.9
+
+# Utilitaires
+python-dateutil>=2.8.2
+phonenumbers>=8.13.27
+
+# Tests
+pytest>=7.4.4
+pytest-asyncio>=0.23.3
+pytest-cov>=4.1.0
+hypothesis>=6.92.0
+
+# Logging
+structlog>=24.1.0

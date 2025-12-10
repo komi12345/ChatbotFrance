@@ -1,0 +1,4 @@
+# file: D:\projet chatbot france\backend\app\routers\messages.py
+# hypothesis_version: 6.148.2
+
+[0.0, 100, 1000, '*', '/messages', '/stats', '/{message_id}', 'Filtrer par campagne', 'Filtrer par contact', 'Filtrer par statut', 'Message non trouvé', 'Messages', 'Numéro de page', 'campaign', 'campaign_id', 'contact_id', 'content', 'created_at', 'delivered', 'delivered_at', 'error_message', 'exact', 'failed', 'first_name', 'full_number', 'id', 'items', 'last_name', 'message_type', 'messages', 'name', 'page', 'pages', 'pending', 'phone_number', 'read', 'read_at', 'retry_count', 'sent', 'sent_at', 'size', 'status', 'total', 'updated_at', 'whatsapp_message_id']

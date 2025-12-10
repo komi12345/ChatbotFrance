@@ -1,0 +1,4 @@
+# file: D:\projet chatbot france\backend\app\schemas\contact.py
+# hypothesis_version: 6.148.2
+
+[100, '-', 'CategoryBrief', '^\\+\\d{1,4}$', 'phone_number']

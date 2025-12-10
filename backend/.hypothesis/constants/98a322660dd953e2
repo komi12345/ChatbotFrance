@@ -1,0 +1,4 @@
+# file: D:\projet chatbot france\backend\app\tasks\celery_app.py
+# hypothesis_version: 6.148.2
+
+['Europe/Paris', 'default', 'json', 'messages', 'messages.#', 'messages.campaign', 'messages.single', 'queue', 'retry', 'retry.#', 'retry.message', 'routing_key', 'whatsapp_chatbot', 'whatsapp_messages']

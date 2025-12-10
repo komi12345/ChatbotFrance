@@ -1,0 +1,4 @@
+# file: D:\projet chatbot france\backend\app\routers\verify.py
+# hypothesis_version: 6.148.2
+
+['/bulk', '/stats', '/verify', '/{contact_id}', 'Contact non trouvé', 'full_number', 'id', 'not_whatsapp_count', 'pending_count', 'total_count', 'verified_at', 'verified_count', 'whatsapp_verified']

@@ -1,0 +1,4 @@
+# file: D:\projet chatbot france\backend\app\tasks\message_tasks.py
+# hypothesis_version: 6.148.2
+
+[0.0, '*', 'Campagne non trouvée', 'Contact non trouvé', 'Max retries exceeded', 'Message non trouvé', 'campaign_id', 'campaigns', 'completed', 'contact_id', 'contacts', 'content', 'content_sid', 'delay_seconds', 'delivered', 'error', 'error_message', 'exact', 'failed', 'failed_count', 'full_number', 'id', 'is_template', 'message', 'message_id', 'messages', 'pending', 'pending_count', 'read', 'retried_count', 'retry_count', 'sending', 'sent', 'sent_at', 'sent_count', 'status', 'success', 'success_count', 'tasks_created', 'template_name', 'total_messages', 'wassenger_message_id', 'whatsapp_id', 'whatsapp_message_id']

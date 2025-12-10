@@ -1,0 +1,4 @@
+# file: D:\projet chatbot france\backend\app\services\monitoring_service.py
+# hypothesis_version: 6.148.2
+
+[0.0, 0.1, 136, 163, 180, '%Y-%m-%d', '...', 'N/A', 'attention', 'blocked', 'daily_limit_reached', 'danger', 'errors', 'key', 'limit', 'message_1', 'message_2', 'new_value', 'ok', 'redis_url', 'total_sent']

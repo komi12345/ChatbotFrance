@@ -1,0 +1,4 @@
+# file: D:\projet chatbot france\backend\app\tasks\celery_app.py
+# hypothesis_version: 6.148.2
+
+['Europe/Paris', 'Sync completed', 'celerybeat-schedule', 'default', 'error', 'json', 'message', 'messages', 'messages.#', 'messages.campaign', 'messages.single', 'options', 'queue', 'retry', 'retry.#', 'retry.message', 'routing_key', 'schedule', 'status', 'success', 'task', 'verify.bulk', 'verify.single', 'whatsapp_chatbot', 'whatsapp_messages']

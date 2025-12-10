@@ -1,0 +1,4 @@
+# file: D:\projet chatbot france\backend\app\tasks\__init__.py
+# hypothesis_version: 6.148.2
+
+['celery_app', 'get_celery_app', 'rate_limiter', 'retry_failed_message', 'send_single_message']

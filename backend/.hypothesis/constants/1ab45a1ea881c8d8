@@ -1,0 +1,4 @@
+# file: D:\projet chatbot france\backend\app\routers\webhooks.py
+# hypothesis_version: 6.148.2
+
+[200, '*', '/gupshup', '/twilio', '/wassenger', '/webhooks', '/whatsapp', 'Erreur inconnue', 'Webhooks', 'application/xml', 'campaign_id', 'campaigns', 'contact_id', 'contacts', 'content', 'created_at', 'delivered', 'delivered_at', 'deprecated_endpoint', 'error_logged', 'error_message', 'event', 'failed', 'failed_count', 'full_number', 'hub.challenge', 'hub.mode', 'hub.verify_token', 'id', 'interaction_count', 'interaction_type', 'is_template', 'message:in:new', 'message:out:', 'message:out:new', 'message:reaction', 'message:update', 'message_1', 'message_2', 'message_id', 'message_type', 'messages', 'note', 'pending', 'queued', 'reaction', 'read', 'read_at', 'received', 'received_at', 'sent', 'sent_at', 'sent_count', 'status', 'subscribe', 'success_count', 'template_name', 'unknown', 'whatsapp_message_id']

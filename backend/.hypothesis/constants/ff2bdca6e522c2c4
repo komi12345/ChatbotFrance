@@ -1,0 +1,4 @@
+# file: D:\projet chatbot france\backend\app\schemas\__init__.py
+# hypothesis_version: 6.148.2
+
+['CampaignCreate', 'CampaignResponse', 'CampaignRetryResult', 'CampaignStats', 'CampaignUpdate', 'CategoryCreate', 'CategoryResponse', 'CategoryUpdate', 'CategoryWithContacts', 'ContactCreate', 'ContactImport', 'ContactImportResult', 'ContactResponse', 'ContactUpdate', 'InteractionResponse', 'LoginRequest', 'MessageDailyStats', 'MessageFilter', 'MessageResponse', 'MessageStats', 'MessageWithContact', 'RefreshTokenRequest', 'Token', 'TokenData', 'UserCreate', 'UserInDB', 'UserResponse', 'UserUpdate']

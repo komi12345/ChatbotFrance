@@ -1,0 +1,4 @@
+# file: D:\projet chatbot france\backend\app\main.py
+# hypothesis_version: 6.148.2
+
+[500, '*', '/', '/api', '/api/docs', '/api/health', '/api/openapi.json', '/api/redoc', '1.0.0', 'Chatbot WhatsApp API', 'Health', 'Root', '__main__', 'app.main:app', 'detail', 'docs', 'environment', 'error', 'healthy', 'message', 'production', 'status', 'version']

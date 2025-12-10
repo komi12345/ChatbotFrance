@@ -1,0 +1,4 @@
+# file: D:\projet chatbot france\backend\app\supabase_client.py
+# hypothesis_version: 6.148.2
+
+['*', 'campaign_categories', 'campaign_id', 'campaigns', 'categories', 'category_contacts', 'category_id', 'contact_id', 'contacts', 'created_at', 'created_by', 'delivered', 'email', 'exact', 'failed', 'full_number', 'id', 'interactions', 'messages', 'name', 'pending', 'read', 'sent', 'status', 'total', 'total_campaigns', 'total_categories', 'total_contacts', 'total_messages', 'users']
