@@ -266,8 +266,8 @@ Render offre un plan gratuit avec 750 heures/mois, idéal pour commencer.
    - **Branch** : `main`
    - **Root Directory** : `backend`
    - **Runtime** : `Python 3`
-   - **Build Command** : `pip install -r requirements.txt`
-   - **Start Command** : `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+   - **Build Command** : `pip install -r requirements.txt && chmod +x start.sh`
+   - **Start Command** : `bash start.sh`
    - **Instance Type** : `Free`
 
 ### Étape 3 : Configurer les Variables d'Environnement
@@ -292,17 +292,36 @@ ALLOWED_ORIGINS=https://votre-app.vercel.app
 RATE_LIMIT_PER_MINUTE=100
 ```
 
-### Étape 4 : Créer un Background Worker pour Celery
+### Étape 4 : Configuration Multi-Process (Recommandé pour Plan Gratuit)
+
+> **Important** : Le plan gratuit Render offre 750h/mois partagées entre tous les services. Avec 2 services séparés (Web + Worker), vous n'aurez que ~15 jours de fonctionnement. La configuration multi-process ci-dessous permet d'utiliser les 750h complètes.
+
+Le projet est configuré pour lancer **Celery et FastAPI dans un seul service** via le fichier `start.sh`. Cette configuration est automatique si vous utilisez le `Procfile` fourni.
+
+**Fichier `backend/Procfile`** (déjà configuré) :
+```
+web: bash start.sh
+```
+
+**Fichier `backend/start.sh`** (déjà configuré) :
+- Lance Celery Worker en arrière-plan
+- Lance Uvicorn (FastAPI) au premier plan
+- Gère proprement l'arrêt des processus
+- Affiche les logs des deux services
+
+**Alternative : Background Worker Séparé (si vous avez un plan payant)**
+
+Si vous avez un plan payant avec plus d'heures, vous pouvez créer un worker séparé :
 
 1. Cliquez sur "New" > "Background Worker"
 2. Même repository et configuration
 3. **Root Directory** : `backend`
 4. **Build Command** : `pip install -r requirements.txt`
-5. **Start Command** : `celery -A app.tasks.celery_app worker --loglevel=info --concurrency=1`
-6. **Instance Type** : `Free`
+5. **Start Command** : `celery -A app.tasks.celery_app worker --loglevel=info --concurrency=1 -Q default,messages,messages_high,retry,verification`
+6. **Instance Type** : Selon votre plan
 7. Ajoutez les mêmes variables d'environnement
 
-### Étape 5 : Éviter la Mise en Veille (Optionnel)
+### Étape 5 : Éviter la Mise en Veille (Recommandé)
 
 Pour éviter que le service ne se mette en veille :
 
@@ -315,8 +334,9 @@ Pour éviter que le service ne se mette en veille :
 ### Note sur les Limites Render
 
 - 750 heures gratuites par mois (suffisant pour 1 service 24/7)
-- Si vous avez 2 services (web + worker), ils partagent les 750h
-- Le premier appel après la veille prend ~30 secondes
+- **Avec la configuration multi-process** : Un seul service = 750h complètes ✅
+- Si vous créez 2 services séparés (web + worker), ils partagent les 750h (~15 jours)
+- Le premier appel après la veille prend ~30 secondes (utilisez UptimeRobot pour éviter)
 
 ---
 
@@ -683,15 +703,15 @@ Pour déployer une nouvelle version :
 
 ## Coûts Estimés (Décembre 2025)
 
-### Option 1 : Gratuit avec Render
+### Option 1 : Gratuit avec Render (Configuration Multi-Process)
 
 | Service | Coût | Limite |
 |---------|------|--------|
 | Vercel (Frontend) | $0 | Hobby plan |
-| Render (Backend) | $0 | 750h/mois, mise en veille |
-| Render (Worker) | $0 | Partage les 750h |
+| Render (Backend + Celery) | $0 | 750h/mois, un seul service |
 | Upstash (Redis) | $0 | 10K cmd/jour |
 | Supabase (DB) | $0 | 500MB, 2 projets |
+| UptimeRobot (Monitoring) | $0 | Évite la mise en veille |
 | Wassenger | ~$19/mois | Plan de base |
 | **Total** | **~$19/mois** | |
 
