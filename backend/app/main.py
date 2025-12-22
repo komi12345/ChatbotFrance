@@ -85,8 +85,9 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
-# Route de santé
+# Route de santé (GET et HEAD pour UptimeRobot)
 @app.get("/api/health", tags=["Health"])
+@app.head("/api/health", tags=["Health"])
 async def health_check():
     """Vérifie que l'API est opérationnelle"""
     return {
