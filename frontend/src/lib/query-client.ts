@@ -7,14 +7,16 @@ export function makeQueryClient() {
   return new QueryClient({
     defaultOptions: {
       queries: {
-        // Durée de cache par défaut : 5 minutes
-        staleTime: 5 * 60 * 1000,
-        // Durée de conservation en cache : 10 minutes
-        gcTime: 10 * 60 * 1000,
+        // Durée de cache par défaut : 30 secondes (mises à jour plus rapides)
+        staleTime: 30 * 1000,
+        // Durée de conservation en cache : 5 minutes
+        gcTime: 5 * 60 * 1000,
         // Retry automatique en cas d'erreur
         retry: 1,
         // Refetch automatique quand la fenêtre reprend le focus
-        refetchOnWindowFocus: false,
+        refetchOnWindowFocus: true,
+        // Refetch quand la connexion réseau revient
+        refetchOnReconnect: true,
       },
       mutations: {
         // Retry automatique pour les mutations

@@ -48,7 +48,7 @@ class MonitoringStatsResponse(BaseModel):
     message_2_count: int = Field(..., description="Nombre de messages de type 2 envoyés")
     total_sent: int = Field(..., description="Total des messages envoyés")
     error_count: int = Field(..., description="Nombre d'erreurs")
-    daily_limit: int = Field(..., description="Limite quotidienne (180)")
+    daily_limit: int = Field(..., description="Limite quotidienne (1000)")
     remaining: int = Field(..., description="Messages restants avant limite")
     alert_level: str = Field(..., description="Niveau d'alerte (ok, attention, danger, blocked)")
     interaction_rate: float = Field(..., description="Taux d'interaction (message_2/message_1)")
@@ -165,3 +165,144 @@ async def get_monitoring_errors(
     # Les erreurs détaillées seront implémentées dans la Phase 4 (Persistance Supabase)
     # avec la table message_errors
     return []
+
+
+class SystemStatusResponse(BaseModel):
+    """Réponse pour le statut système."""
+    status: str = Field(..., description="Statut global (healthy, degraded, critical)")
+    redis_connected: bool = Field(..., description="Connexion Redis active")
+    supabase_connected: bool = Field(..., description="Connexion Supabase active")
+    celery_workers: int = Field(..., description="Nombre de workers Celery actifs")
+    active_campaigns: int = Field(..., description="Nombre de campagnes en cours")
+    active_locks: int = Field(..., description="Nombre de verrous actifs")
+    daily_quota_used: int = Field(..., description="Quota quotidien utilisé")
+    daily_quota_remaining: int = Field(..., description="Quota quotidien restant")
+    can_send_messages: bool = Field(..., description="Envoi de messages autorisé")
+    timestamp: str = Field(..., description="Timestamp du statut")
+
+
+@router.get("/system-status", response_model=SystemStatusResponse)
+async def get_system_status(
+    current_user: Dict = Depends(get_current_user),
+    monitoring_service: MonitoringService = Depends(get_monitoring_service)
+) -> SystemStatusResponse:
+    """
+    Récupère le statut complet du système pour le déploiement en production.
+    
+    Vérifie:
+    - Connexion Redis
+    - Connexion Supabase
+    - Workers Celery
+    - Campagnes actives
+    - Verrous distribués
+    - Quota quotidien
+    
+    Requirements: Production monitoring
+    """
+    logger.info(f"Vérification statut système par utilisateur {current_user.get('id')}")
+    
+    # Vérifier Redis
+    redis_connected = False
+    active_locks = 0
+    try:
+        monitoring_service.redis_client.ping()
+        redis_connected = True
+        # Compter les verrous actifs
+        lock_keys = list(monitoring_service.redis_client.scan_iter(match="campaign:lock:*"))
+        active_locks = len(lock_keys)
+    except Exception as e:
+        logger.error(f"Erreur connexion Redis: {e}")
+    
+    # Vérifier Supabase
+    supabase_connected = False
+    active_campaigns = 0
+    try:
+        from app.supabase_client import get_supabase_db
+        db = get_supabase_db()
+        # Test simple de connexion
+        campaigns, _ = db.get_campaigns(limit=1, status="sending")
+        supabase_connected = True
+        # Compter les campagnes en cours
+        _, active_campaigns = db.get_campaigns(status="sending")
+    except Exception as e:
+        logger.error(f"Erreur connexion Supabase: {e}")
+    
+    # Vérifier Celery (via Redis)
+    celery_workers = 0
+    try:
+        from app.tasks.celery_app import celery_app
+        inspect = celery_app.control.inspect()
+        active = inspect.active()
+        if active:
+            celery_workers = len(active)
+    except Exception as e:
+        logger.warning(f"Impossible de vérifier les workers Celery: {e}")
+    
+    # Quota quotidien
+    stats = monitoring_service.get_daily_stats()
+    can_send, _ = monitoring_service.can_send_message()
+    
+    # Déterminer le statut global
+    if not redis_connected or not supabase_connected:
+        status = "critical"
+    elif celery_workers == 0 or not can_send:
+        status = "degraded"
+    else:
+        status = "healthy"
+    
+    return SystemStatusResponse(
+        status=status,
+        redis_connected=redis_connected,
+        supabase_connected=supabase_connected,
+        celery_workers=celery_workers,
+        active_campaigns=active_campaigns,
+        active_locks=active_locks,
+        daily_quota_used=stats.total_sent,
+        daily_quota_remaining=max(0, DAILY_MESSAGE_LIMIT - stats.total_sent),
+        can_send_messages=can_send,
+        timestamp=datetime.now(timezone.utc).isoformat()
+    )
+
+
+class CampaignLockInfo(BaseModel):
+    """Information sur un verrou de campagne."""
+    campaign_id: int
+    user_id: int
+    locked_at: str
+    ttl: int
+
+
+@router.get("/locks", response_model=List[CampaignLockInfo])
+async def get_active_locks(
+    current_user: Dict = Depends(get_current_user),
+    monitoring_service: MonitoringService = Depends(get_monitoring_service)
+) -> List[CampaignLockInfo]:
+    """
+    Récupère la liste des verrous de campagne actifs.
+    
+    Utile pour diagnostiquer les problèmes de campagnes bloquées.
+    
+    Requirements: Production monitoring
+    """
+    logger.info(f"Récupération verrous actifs par utilisateur {current_user.get('id')}")
+    
+    locks = []
+    try:
+        lock_keys = list(monitoring_service.redis_client.scan_iter(match="campaign:lock:*"))
+        
+        for key in lock_keys:
+            # Extraire l'ID de campagne du nom de clé
+            campaign_id = int(key.split(":")[-1])
+            lock_info = monitoring_service.get_campaign_lock_info(campaign_id)
+            
+            if lock_info:
+                locks.append(CampaignLockInfo(
+                    campaign_id=campaign_id,
+                    user_id=lock_info["user_id"],
+                    locked_at=lock_info["locked_at"],
+                    ttl=lock_info["ttl"]
+                ))
+    except Exception as e:
+        logger.error(f"Erreur récupération verrous: {e}")
+    
+    return locks

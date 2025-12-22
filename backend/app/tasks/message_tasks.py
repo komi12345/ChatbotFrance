@@ -4,14 +4,29 @@ Gère l'envoi massif par lots, l'envoi individuel et les retries avec backoff ex
 
 Migration: Twilio Sandbox -> Wassenger 2025
 Exigences: 6.1, 6.2, 6.4
+
+Logique Message 2:
+- Message 1 est envoyé au contact
+- Si le contact répond (interaction) dans les 24h -> Message 2 envoyé IMMÉDIATEMENT
+- Si le contact ne répond pas dans les 24h -> Message 2 N'EST PAS envoyé (campagne terminée pour ce contact)
+- Cela permet aux campagnes de se terminer après 24h maximum
+
+ROBUSTESSE 2025:
+- Gestion des interruptions brutales (connexion perdue, crash serveur)
+- Protection contre les doublons d'envoi
+- Idempotence des tâches (réexécution sûre)
+- Validation des données avant traitement
+- Timeouts et circuit breakers
 """
 import logging
 import asyncio
 import time
-from datetime import datetime
+import hashlib
+from datetime import datetime, timedelta
 from typing import Optional, List
 from celery import shared_task
-from celery.exceptions import MaxRetriesExceededError
+from celery.exceptions import MaxRetriesExceededError, SoftTimeLimitExceeded
+from contextlib import contextmanager
 
 from app.config import settings
 from app.supabase_client import SupabaseDB, get_supabase_client
@@ -22,14 +37,208 @@ from app.services.wassenger_service import wassenger_service, WassengerResponse
 logger = logging.getLogger(__name__)
 
 # ==========================================================================
-# CONFIGURATION WASSENGER
+# CONFIGURATION WASSENGER - ANTI-BAN SETTINGS 2025
 # ==========================================================================
-# Rate limit Wassenger: 1 message par seconde (optimisé pour la réactivité)
-# Note: Wassenger supporte jusqu'à 1 msg/s, on utilise 1s pour être safe
-WASSENGER_RATE_LIMIT_SECONDS = 1
+# Rate limit Wassenger: 25 secondes entre chaque message
+# IMPORTANT: WhatsApp peut bannir les numéros qui envoient trop vite !
+# 
+# Recommandations 2025 pour éviter les bans:
+# - Nouveaux comptes: 30-60 secondes entre messages
+# - Comptes matures (>6 mois): 20-30 secondes entre messages
+# - Messages identiques: risque de ban après 20-30 envois
+# - Messages personnalisés: permet d'envoyer 500+ messages en sécurité
+#
+# Configuration actuelle: 25 secondes (sécuritaire pour la plupart des comptes)
+# Pour 1000 messages: ~7 heures d'envoi (1000 * 25s = 25000s ≈ 6.9h)
+WASSENGER_RATE_LIMIT_SECONDS = 25
+
+# Batch configuration pour envois massifs
+# Envoyer par lots de 25 messages, puis pause de 5 minutes
+BATCH_SIZE = 25
+BATCH_PAUSE_SECONDS = 300  # 5 minutes de pause entre les lots
+
+# Délai avant l'envoi du Message 2 (24 heures en secondes)
+MESSAGE_2_DELAY_SECONDS = 24 * 60 * 60  # 86400 secondes = 24h
 
 # Timestamp du dernier envoi pour le rate limiting Sandbox
 _last_send_timestamp: float = 0.0
+
+# ==========================================================================
+# ROBUSTESSE - PROTECTION CONTRE LES DOUBLONS ET INTERRUPTIONS
+# ==========================================================================
+# TTL pour les verrous d'idempotence (5 minutes)
+IDEMPOTENCY_LOCK_TTL = 300
+
+# Timeout pour les opérations d'envoi (30 secondes)
+SEND_OPERATION_TIMEOUT = 30
+
+# Nombre maximum de vérifications de statut avant abandon
+MAX_STATUS_CHECKS = 3
+
+
+def get_idempotency_key(message_id: int, operation: str = "send") -> str:
+    """
+    Génère une clé d'idempotence unique pour une opération sur un message.
+    Permet d'éviter les doublons en cas de réexécution de tâche.
+    
+    Args:
+        message_id: ID du message
+        operation: Type d'opération (send, retry, etc.)
+    
+    Returns:
+        Clé d'idempotence unique
+    """
+    return f"idempotency:{operation}:{message_id}"
+
+
+def acquire_idempotency_lock(message_id: int, operation: str = "send") -> bool:
+    """
+    Acquiert un verrou d'idempotence pour éviter les doublons.
+    
+    Args:
+        message_id: ID du message
+        operation: Type d'opération
+    
+    Returns:
+        True si le verrou est acquis, False si déjà verrouillé
+    """
+    try:
+        key = get_idempotency_key(message_id, operation)
+        redis_client = monitoring_service.redis_client
+        
+        # SET NX avec TTL - retourne True si la clé n'existait pas
+        acquired = redis_client.set(key, datetime.utcnow().isoformat(), nx=True, ex=IDEMPOTENCY_LOCK_TTL)
+        
+        if acquired:
+            logger.debug(f"Verrou d'idempotence acquis: {key}")
+        else:
+            logger.warning(f"Verrou d'idempotence déjà existant: {key} - opération ignorée")
+        
+        return bool(acquired)
+    except Exception as e:
+        logger.error(f"Erreur acquisition verrou idempotence: {e}")
+        # En cas d'erreur Redis, on autorise l'opération (fail-open)
+        return True
+
+
+def release_idempotency_lock(message_id: int, operation: str = "send") -> None:
+    """
+    Libère un verrou d'idempotence.
+    
+    Args:
+        message_id: ID du message
+        operation: Type d'opération
+    """
+    try:
+        key = get_idempotency_key(message_id, operation)
+        redis_client = monitoring_service.redis_client
+        redis_client.delete(key)
+        logger.debug(f"Verrou d'idempotence libéré: {key}")
+    except Exception as e:
+        logger.error(f"Erreur libération verrou idempotence: {e}")
+
+
+@contextmanager
+def idempotency_guard(message_id: int, operation: str = "send"):
+    """
+    Context manager pour garantir l'idempotence d'une opération.
+    
+    Usage:
+        with idempotency_guard(message_id, "send") as can_proceed:
+            if can_proceed:
+                # Effectuer l'opération
+    """
+    can_proceed = acquire_idempotency_lock(message_id, operation)
+    try:
+        yield can_proceed
+    finally:
+        if can_proceed:
+            release_idempotency_lock(message_id, operation)
+
+
+def validate_message_data(message: dict) -> tuple[bool, str]:
+    """
+    Valide les données d'un message avant envoi.
+    
+    Args:
+        message: Dictionnaire du message
+    
+    Returns:
+        Tuple (is_valid, error_message)
+    """
+    if not message:
+        return False, "Message non trouvé"
+    
+    required_fields = ["id", "contact_id", "campaign_id", "content"]
+    for field in required_fields:
+        if field not in message or message[field] is None:
+            return False, f"Champ requis manquant: {field}"
+    
+    if not message.get("content", "").strip():
+        return False, "Contenu du message vide"
+    
+    return True, ""
+
+
+def validate_contact_data(contact: dict) -> tuple[bool, str]:
+    """
+    Valide les données d'un contact avant envoi.
+    
+    Args:
+        contact: Dictionnaire du contact
+    
+    Returns:
+        Tuple (is_valid, error_message)
+    """
+    if not contact:
+        return False, "Contact non trouvé"
+    
+    phone = contact.get("whatsapp_id") or contact.get("full_number")
+    if not phone:
+        return False, "Numéro de téléphone manquant"
+    
+    # Validation basique du format de numéro
+    phone_clean = phone.replace("+", "").replace(" ", "")
+    if not phone_clean.isdigit() or len(phone_clean) < 8:
+        return False, f"Format de numéro invalide: {phone}"
+    
+    return True, ""
+
+
+def is_campaign_active(client, campaign_id: int, message_type: str = "message_1") -> tuple[bool, str]:
+    """
+    Vérifie si une campagne est active et peut recevoir des envois.
+    
+    Args:
+        client: Client Supabase
+        campaign_id: ID de la campagne
+        message_type: Type de message (message_1 ou message_2)
+    
+    Returns:
+        Tuple (is_active, reason)
+    """
+    try:
+        campaign_response = client.table("campaigns").select("status").eq("id", campaign_id).limit(1).execute()
+        
+        if not campaign_response.data:
+            return False, "Campagne non trouvée"
+        
+        campaign_status = campaign_response.data[0].get("status")
+        
+        # Bloquer si campagne arrêtée manuellement
+        if campaign_status == "failed":
+            return False, "Campagne arrêtée manuellement"
+        
+        # Pour message_1, bloquer si campagne terminée
+        if campaign_status == "completed" and message_type != "message_2":
+            return False, "Campagne terminée"
+        
+        return True, ""
+        
+    except Exception as e:
+        logger.error(f"Erreur vérification statut campagne {campaign_id}: {e}")
+        # En cas d'erreur, on autorise (fail-open) pour ne pas bloquer les envois
+        return True, ""
 
 
 def get_db() -> SupabaseDB:
@@ -90,6 +299,44 @@ def wait_for_wassenger_rate_limit() -> None:
     _last_send_timestamp = time.time()
 
 
+def has_contact_interacted(client, campaign_id: int, contact_id: int, since_timestamp: str = None) -> bool:
+    """
+    Vérifie si un contact a eu une interaction (réponse) pour une campagne donnée.
+    
+    Cette fonction est utilisée pour décider si le Message 2 doit être envoyé.
+    Si le contact a répondu au Message 1, on n'envoie pas le Message 2.
+    
+    Args:
+        client: Client Supabase
+        campaign_id: ID de la campagne
+        contact_id: ID du contact
+        since_timestamp: Timestamp ISO (optionnel, pour filtrer les interactions après cette date)
+    
+    Returns:
+        True si le contact a eu une interaction, False sinon
+    """
+    try:
+        query = client.table("interactions").select("id", count="exact").eq(
+            "campaign_id", campaign_id
+        ).eq(
+            "contact_id", contact_id
+        ).in_(
+            "interaction_type", ["reply", "reaction"]  # Seules les réponses et réactions comptent
+        )
+        
+        if since_timestamp:
+            query = query.gte("received_at", since_timestamp)
+        
+        response = query.execute()
+        interaction_count = response.count or 0
+        
+        return interaction_count > 0
+        
+    except Exception as e:
+        logger.error(f"Erreur vérification interaction contact {contact_id}: {e}")
+        return False  # En cas d'erreur, on considère qu'il n'y a pas d'interaction (sécurité)
+
+
 def update_campaign_statistics(client, campaign_id: int, success: bool) -> None:
     """
     Met à jour les statistiques de la campagne après l'envoi d'un message.
@@ -134,6 +381,8 @@ def update_campaign_statistics(client, campaign_id: int, success: bool) -> None:
     max_retries=3,
     default_retry_delay=60,
     acks_late=True,
+    soft_time_limit=60,  # Timeout souple de 60 secondes
+    time_limit=90,  # Timeout dur de 90 secondes
 )
 def send_single_message(
     self,
@@ -145,8 +394,15 @@ def send_single_message(
     """
     Envoie un message individuel via Wassenger WhatsApp API.
     
+    ROBUSTESSE:
+    - Verrou d'idempotence pour éviter les doublons
+    - Validation des données avant envoi
+    - Vérification du statut de la campagne
+    - Gestion des timeouts
+    - Protection contre les interruptions
+    
     Intègre le monitoring pour:
-    - Vérifier la limite quotidienne avant envoi (180 messages/jour)
+    - Vérifier la limite quotidienne avant envoi (1000 messages/jour)
     - Incrémenter les compteurs de messages envoyés
     - Incrémenter les compteurs d'erreurs en cas d'échec
     
@@ -164,6 +420,16 @@ def send_single_message(
     db = get_db()
     client = get_supabase_client()
     
+    # Vérifier l'idempotence - éviter les doublons en cas de réexécution
+    if not acquire_idempotency_lock(message_id, "send"):
+        logger.info(f"Message {message_id} déjà en cours de traitement (idempotence), skip")
+        return {
+            "success": True,
+            "message_id": message_id,
+            "skipped": True,
+            "reason": "Opération déjà en cours (idempotence)"
+        }
+    
     try:
         # Vérifier la limite quotidienne avant envoi - Requirements: 2.1, 2.2
         can_send, error_code = monitoring_service.can_send_message()
@@ -175,21 +441,24 @@ def send_single_message(
             # Mettre à jour le message avec l'erreur
             db.update_message(message_id, {
                 "status": "failed",
-                "error_message": "Limite quotidienne de 180 messages atteinte. Réessayez demain."
+                "error_message": "Limite quotidienne de 1000 messages atteinte. Réessayez demain."
             })
             return {
                 "success": False,
                 "message_id": message_id,
                 "error": error_code,
-                "error_message": "Limite quotidienne de 180 messages atteinte. Réessayez demain.",
+                "error_message": "Limite quotidienne de 1000 messages atteinte. Réessayez demain.",
                 "blocked": True
             }
         
         # Récupérer le message
         message = db.get_message_by_id(message_id)
-        if not message:
-            logger.error(f"Message {message_id} non trouvé")
-            return {"success": False, "error": "Message non trouvé"}
+        
+        # Validation des données du message
+        is_valid, error_msg = validate_message_data(message)
+        if not is_valid:
+            logger.error(f"Message {message_id} invalide: {error_msg}")
+            return {"success": False, "error": error_msg}
         
         # IMPORTANT: Vérifier si le message a déjà été envoyé (évite les doublons)
         current_status = message.get("status")
@@ -203,7 +472,6 @@ def send_single_message(
             }
         
         # Vérifier si le message a été annulé/échoué manuellement
-        # Note: "cancelled" n'existe pas en BDD, on utilise "failed" avec un message d'erreur spécifique
         if current_status == "failed" and message.get("error_message") == "Campagne arrêtée par l'utilisateur":
             logger.info(f"Message {message_id} annulé par l'utilisateur, skip")
             return {
@@ -216,45 +484,35 @@ def send_single_message(
         # Récupérer le contact via requête directe
         contact_response = client.table("contacts").select("*").eq("id", message["contact_id"]).limit(1).execute()
         contact = contact_response.data[0] if contact_response.data else None
-        if not contact:
-            logger.error(f"Contact {message['contact_id']} non trouvé pour message {message_id}")
-            return {"success": False, "error": "Contact non trouvé"}
+        
+        # Validation des données du contact
+        is_valid, error_msg = validate_contact_data(contact)
+        if not is_valid:
+            logger.error(f"Contact invalide pour message {message_id}: {error_msg}")
+            db.update_message(message_id, {
+                "status": "failed",
+                "error_message": error_msg
+            })
+            return {"success": False, "error": error_msg}
         
         # Vérifier si la campagne est toujours active
-        # Note: "failed" est utilisé pour les campagnes arrêtées manuellement (pas de statut "stopped" en BDD)
-        # IMPORTANT: Les messages de type "message_2" (réponses automatiques) doivent être envoyés
-        # même si la campagne est "completed", car ils sont déclenchés par l'interaction du contact.
-        # Seuls les messages de type "message_1" sont bloqués quand la campagne est terminée.
         message_type = message.get("message_type", "message_1")
-        campaign_response = client.table("campaigns").select("status").eq("id", message["campaign_id"]).limit(1).execute()
-        if campaign_response.data:
-            campaign_status = campaign_response.data[0].get("status")
-            # Bloquer seulement si:
-            # - La campagne est "failed" (arrêtée manuellement) -> bloquer tous les messages
-            # - La campagne est "completed" ET c'est un message_1 -> bloquer
-            # - NE PAS bloquer les message_2 quand la campagne est "completed"
-            should_block = False
-            if campaign_status == "failed":
-                should_block = True
-            elif campaign_status == "completed" and message_type != "message_2":
-                should_block = True
-            
-            if should_block:
-                logger.info(f"Campagne {message['campaign_id']} terminée/arrêtée (status={campaign_status}), skip message {message_id} (type={message_type})")
-                db.update_message(message_id, {
-                    "status": "failed",
-                    "error_message": "Campagne arrêtée ou terminée"
-                })
-                return {
-                    "success": False,
-                    "message_id": message_id,
-                    "skipped": True,
-                    "reason": f"Campagne {campaign_status}"
-                }
-            elif campaign_status == "completed" and message_type == "message_2":
-                logger.info(f"Campagne {message['campaign_id']} completed mais message_2 autorisé pour message {message_id}")
+        is_active, reason = is_campaign_active(client, message["campaign_id"], message_type)
         
-        # Respecter le rate limit Wassenger (1 msg/2s) - Exigence 2.5
+        if not is_active:
+            logger.info(f"Campagne {message['campaign_id']} inactive ({reason}), skip message {message_id}")
+            db.update_message(message_id, {
+                "status": "failed",
+                "error_message": reason
+            })
+            return {
+                "success": False,
+                "message_id": message_id,
+                "skipped": True,
+                "reason": reason
+            }
+        
+        # Respecter le rate limit Wassenger (25s entre messages) - Exigence 2.5
         wait_for_wassenger_rate_limit()
         
         # Envoyer le message via Wassenger API
@@ -271,17 +529,17 @@ def send_single_message(
         
         # Mettre à jour le statut du message
         if response.success:
+            sent_at_timestamp = datetime.utcnow().isoformat()
+            
             # Stocker le message_id Wassenger dans whatsapp_message_id
             db.update_message(message_id, {
                 "status": "sent",
                 "whatsapp_message_id": response.message_id,  # ID Wassenger
-                "sent_at": datetime.utcnow().isoformat(),
+                "sent_at": sent_at_timestamp,
                 "error_message": None
             })
             
             # Incrémenter le compteur de monitoring - Requirements: 1.1
-            # Utiliser le message_type du message (déjà récupéré plus haut)
-            # message_type est soit "message_1" soit "message_2" selon le type de message en BDD
             logger.info(f"Compteur {message_type} incrémenté")
             monitoring_service.increment_message_counter(message_type)
             
@@ -305,7 +563,7 @@ def send_single_message(
             can_retry = retry_count < settings.MAX_RETRY_ATTEMPTS
             
             db.update_message(message_id, {
-                "status": "pending" if can_retry else "failed",  # Garder pending si retry prévu
+                "status": "pending" if can_retry else "failed",
                 "error_message": response.error_message,
                 "retry_count": retry_count
             })
@@ -331,6 +589,15 @@ def send_single_message(
                 "error": response.error_message,
                 "retry_count": retry_count
             }
+    
+    except SoftTimeLimitExceeded:
+        # Timeout atteint - marquer comme pending pour retry automatique
+        logger.warning(f"Message {message_id}: timeout atteint, sera réessayé")
+        db.update_message(message_id, {
+            "status": "pending",
+            "error_message": "Timeout - sera réessayé automatiquement"
+        })
+        return {"success": False, "error": "Timeout", "will_retry": True}
             
     except MaxRetriesExceededError:
         logger.error(f"Message {message_id}: nombre maximum de retries atteint")
@@ -347,7 +614,6 @@ def send_single_message(
     except self.MaxRetriesExceededError:
         # Alias pour compatibilité
         logger.error(f"Message {message_id}: nombre maximum de retries atteint")
-        # Incrémenter le compteur d'erreurs - Requirements: 6.1
         monitoring_service.increment_error_counter()
         db.update_message(message_id, {
             "status": "failed",
@@ -366,13 +632,16 @@ def send_single_message(
             raise self.retry(exc=e, countdown=delay)
         else:
             # Max retries atteint, marquer comme échoué
-            # Incrémenter le compteur d'erreurs - Requirements: 6.1
             monitoring_service.increment_error_counter()
             db.update_message(message_id, {
                 "status": "failed",
                 "error_message": f"Erreur après {current_retries} tentatives: {error_msg}"
             })
             return {"success": False, "error": error_msg}
+    
+    finally:
+        # Toujours libérer le verrou d'idempotence
+        release_idempotency_lock(message_id, "send")
 
 
 
@@ -384,15 +653,19 @@ def send_single_message(
 def send_campaign_messages(
     self,
     campaign_id: int,
-    batch_size: int = 20
+    batch_size: int = None
 ) -> dict:
     """
     Envoie les messages d'une campagne par lots via Wassenger API.
-    Respecte la limite de 1 message toutes les 2 secondes de Wassenger.
+    
+    ANTI-BAN STRATEGY 2025:
+    - Délai de 25 secondes entre chaque message
+    - Envoi par lots de 25 messages avec pause de 5 minutes entre les lots
+    - Pour 1000 messages: ~7-8 heures d'envoi total
     
     Args:
         campaign_id: ID de la campagne
-        batch_size: Taille des lots (défaut: 20)
+        batch_size: Taille des lots (défaut: BATCH_SIZE = 25)
     
     Returns:
         Dictionnaire avec les statistiques d'envoi
@@ -401,6 +674,10 @@ def send_campaign_messages(
     """
     db = get_db()
     client = get_supabase_client()
+    
+    # Utiliser la taille de lot par défaut si non spécifiée
+    if batch_size is None:
+        batch_size = BATCH_SIZE
     
     try:
         # Récupérer la campagne directement (sans filtre user_id pour les tâches Celery)
@@ -428,13 +705,44 @@ def send_campaign_messages(
         content_sid = None
         template_name = campaign.get("template_name")
         
-        # Créer les tâches d'envoi pour chaque message
-        # Avec délai de 2 secondes entre chaque envoi pour respecter le rate limit Wassenger
-        tasks_created = 0
+        # ==========================================================================
+        # ANTI-BAN BATCH LOGIC 2025
+        # ==========================================================================
+        # Stratégie: Envoyer par lots avec pauses pour éviter les bans WhatsApp
+        # - Lot de 25 messages avec 25s entre chaque message
+        # - Pause de 5 minutes entre chaque lot
+        # - Temps par lot: 25 * 25s = 625s (~10 min)
+        # - Pour 1000 messages (40 lots): ~7-8 heures
+        # ==========================================================================
         
-        for message in pending_messages:
-            # Créer une tâche d'envoi individuel avec délai de 2s entre chaque
-            # Exigence 2.5: 1 message toutes les 2 secondes
+        tasks_created = 0
+        current_batch = 0
+        
+        for i, message in enumerate(pending_messages):
+            # Calculer le numéro de lot actuel
+            batch_number = i // batch_size
+            position_in_batch = i % batch_size
+            
+            # Calculer le délai total:
+            # - Délai de base: position dans le lot * rate limit
+            # - Délai de pause: nombre de lots précédents * pause entre lots
+            base_delay = position_in_batch * WASSENGER_RATE_LIMIT_SECONDS
+            batch_pause_delay = batch_number * BATCH_PAUSE_SECONDS
+            
+            # Ajouter aussi le temps des lots précédents (messages déjà envoyés)
+            previous_batches_time = batch_number * batch_size * WASSENGER_RATE_LIMIT_SECONDS
+            
+            total_delay = base_delay + batch_pause_delay + previous_batches_time
+            
+            # Log pour le premier message de chaque lot
+            if position_in_batch == 0:
+                logger.info(
+                    f"Campagne {campaign_id}: Lot {batch_number + 1} programmé "
+                    f"(messages {i + 1}-{min(i + batch_size, total_messages)}) "
+                    f"démarrage dans {total_delay}s"
+                )
+            
+            # Créer une tâche d'envoi individuel avec le délai calculé
             send_single_message.apply_async(
                 args=[message["id"]],
                 kwargs={
@@ -442,15 +750,30 @@ def send_campaign_messages(
                     "template_name": template_name,
                     "content_sid": content_sid
                 },
-                countdown=tasks_created * WASSENGER_RATE_LIMIT_SECONDS
+                countdown=total_delay
             )
             tasks_created += 1
         
-        logger.info(f"Campagne {campaign_id}: {tasks_created} tâches d'envoi créées (délai {WASSENGER_RATE_LIMIT_SECONDS}s entre chaque)")
+        # Calculer le temps estimé de complétion
+        num_batches = (total_messages + batch_size - 1) // batch_size  # Arrondi supérieur
+        estimated_completion_time = (
+            total_messages * WASSENGER_RATE_LIMIT_SECONDS +  # Temps d'envoi
+            (num_batches - 1) * BATCH_PAUSE_SECONDS +  # Pauses entre lots
+            60  # Marge de sécurité
+        )
+        
+        # Convertir en heures/minutes pour le log
+        hours = estimated_completion_time // 3600
+        minutes = (estimated_completion_time % 3600) // 60
+        
+        logger.info(
+            f"Campagne {campaign_id}: {tasks_created} tâches créées en {num_batches} lots. "
+            f"Délai entre messages: {WASSENGER_RATE_LIMIT_SECONDS}s, "
+            f"Pause entre lots: {BATCH_PAUSE_SECONDS}s. "
+            f"Temps estimé: {hours}h{minutes}min"
+        )
         
         # Programmer une tâche pour mettre à jour le statut final de la campagne
-        # après que tous les messages aient été traités
-        estimated_completion_time = tasks_created * WASSENGER_RATE_LIMIT_SECONDS + 30  # +30s de marge
         update_campaign_status.apply_async(
             args=[campaign_id],
             countdown=estimated_completion_time
@@ -460,7 +783,10 @@ def send_campaign_messages(
             "success": True,
             "campaign_id": campaign_id,
             "total_messages": total_messages,
-            "tasks_created": tasks_created
+            "tasks_created": tasks_created,
+            "num_batches": num_batches,
+            "estimated_completion_seconds": estimated_completion_time,
+            "estimated_completion_hours": round(estimated_completion_time / 3600, 1)
         }
         
     except Exception as e:
@@ -975,3 +1301,14 @@ def update_campaign_status(self, campaign_id: int) -> dict:
     except Exception as e:
         logger.exception(f"Erreur mise à jour statut campagne {campaign_id}: {e}")
         return {"success": False, "error": str(e)}
+
+
+# ==========================================================================
+# NOTE: MESSAGE 2 LOGIC
+# ==========================================================================
+# Le Message 2 est envoyé IMMÉDIATEMENT quand le contact répond au Message 1.
+# Cette logique est gérée dans webhooks.py -> process_wassenger_message -> _schedule_message_2_wassenger
+# 
+# Si le contact ne répond pas dans les 24h, le Message 2 n'est JAMAIS envoyé.
+# Cela permet aux campagnes de se terminer après 24h maximum.
+# ==========================================================================

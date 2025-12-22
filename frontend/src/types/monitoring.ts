@@ -5,10 +5,10 @@
 
 /**
  * Alert level based on daily message counter percentage
- * - ok: 0-75% (0-135 messages)
- * - attention: 76-90% (136-162 messages)
- * - danger: 91-100% (163-180 messages)
- * - blocked: >100% (>180 messages)
+ * - ok: 0-75% (0-750 messages)
+ * - attention: 76-90% (751-900 messages)
+ * - danger: 91-100% (901-1000 messages)
+ * - blocked: >100% (>1000 messages)
  */
 export type AlertLevel = 'ok' | 'attention' | 'danger' | 'blocked';
 
@@ -25,9 +25,9 @@ export interface MonitoringStats {
   total_sent: number;
   /** Number of errors today */
   error_count: number;
-  /** Daily message limit (180) */
+  /** Daily message limit (1000) */
   daily_limit: number;
-  /** Messages remaining before limit (180 - total_sent) */
+  /** Messages remaining before limit (1000 - total_sent) */
   remaining: number;
   /** Current alert level based on usage percentage */
   alert_level: AlertLevel;

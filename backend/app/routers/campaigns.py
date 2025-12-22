@@ -33,8 +33,18 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/campaigns", tags=["Campaigns"])
 
 
-def campaign_to_response(campaign: Dict, categories: List[Dict] = None) -> CampaignWithCategories:
-    """Convertit un dict campagne en CampaignWithCategories"""
+def campaign_to_response(campaign: Dict, categories: List[Dict] = None, db: SupabaseDB = None) -> CampaignWithCategories:
+    """Convertit un dict campagne en CampaignWithCategories avec calcul des stats en temps réel"""
+    # Calculer success_count et interaction_count si db est fourni
+    success_count = campaign.get("delivered_count", 0) + campaign.get("read_count", 0)
+    interaction_count = 0
+    
+    if db:
+        try:
+            interaction_count = db.get_campaign_interaction_count(campaign["id"])
+        except Exception:
+            pass  # Ignorer les erreurs, garder 0
+    
     return CampaignWithCategories(
         id=campaign["id"],
         name=campaign["name"],
@@ -47,6 +57,8 @@ def campaign_to_response(campaign: Dict, categories: List[Dict] = None) -> Campa
         delivered_count=campaign.get("delivered_count", 0),
         read_count=campaign.get("read_count", 0),
         failed_count=campaign.get("failed_count", 0),
+        success_count=success_count,
+        interaction_count=interaction_count,
         created_by=campaign["created_by"],
         created_at=campaign.get("created_at"),
         updated_at=campaign.get("updated_at"),
@@ -81,7 +93,7 @@ async def list_campaigns(
     items = []
     for campaign in campaigns:
         categories = db.get_campaign_categories(campaign["id"])
-        campaign_response = campaign_to_response(campaign, categories)
+        campaign_response = campaign_to_response(campaign, categories, db)
         
         # Calculer le taux de réussite
         if campaign.get("total_recipients", 0) > 0:
@@ -167,7 +179,7 @@ async def create_campaign(
         send_campaign_messages.delay(campaign["id"])
         logger.info(f"Tâche Celery d'envoi créée pour campagne {campaign['id']}")
     
-    return campaign_to_response(campaign, categories)
+    return campaign_to_response(campaign, categories, db)
 
 
 @router.get("/{campaign_id}", response_model=CampaignWithCategories)
@@ -190,7 +202,7 @@ async def get_campaign(
     
     categories = db.get_campaign_categories(campaign_id)
     
-    return campaign_to_response(campaign, categories)
+    return campaign_to_response(campaign, categories, db)
 
 
 @router.put("/{campaign_id}", response_model=CampaignWithCategories)
@@ -229,7 +241,7 @@ async def update_campaign(
     
     logger.info(f"Campagne {campaign_id} mise à jour par utilisateur {current_user['id']}")
     
-    return campaign_to_response(campaign, categories)
+    return campaign_to_response(campaign, categories, db)
 
 
 @router.post("/{campaign_id}/stop", response_model=dict)
@@ -363,8 +375,18 @@ async def send_campaign(
 ) -> dict:
     """
     Lance l'envoi des messages d'une campagne (partagée entre tous les utilisateurs).
+    Utilise un verrou distribué pour éviter les envois simultanés.
+    
+    ROBUSTESSE:
+    - Verrou distribué pour éviter les envois simultanés
+    - Vérification du quota avant lancement
+    - Gestion des erreurs avec rollback
+    - Logging détaillé pour le debugging
+    
     Requirements: 5.1 - Any user can send any campaign
     """
+    from app.tasks.celery_app import monitoring_service
+    
     campaign = db.get_campaign_by_id(campaign_id)
     
     if not campaign:
@@ -379,37 +401,98 @@ async def send_campaign(
             detail="Seules les campagnes en brouillon peuvent être envoyées"
         )
     
-    # Mettre à jour le statut
-    db.update_campaign(campaign_id, {"status": "sending"})
-    
-    # Récupérer les contacts cibles (partagés entre tous les utilisateurs)
-    contacts = db.get_contacts_for_campaign(campaign_id)
-    
-    # Créer les messages pour chaque contact
-    for contact in contacts:
-        db.create_message({
+    # Acquérir un verrou distribué pour éviter les envois simultanés
+    lock_acquired = False
+    try:
+        lock_acquired = monitoring_service.acquire_campaign_lock(campaign_id, current_user["id"])
+        if not lock_acquired:
+            lock_info = monitoring_service.get_campaign_lock_info(campaign_id)
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Campagne en cours de traitement par un autre utilisateur. Réessayez dans quelques minutes."
+            )
+        
+        # Vérifier le quota disponible avant de lancer
+        contacts = db.get_contacts_for_campaign(campaign_id)
+        total_messages = len(contacts)
+        
+        if total_messages == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Aucun contact à contacter dans cette campagne"
+            )
+        
+        can_reserve, remaining = monitoring_service.reserve_message_quota(total_messages)
+        if not can_reserve:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Quota quotidien insuffisant. {remaining} messages disponibles sur {total_messages} demandés."
+            )
+        
+        # Mettre à jour le statut
+        db.update_campaign(campaign_id, {"status": "sending"})
+        
+        # Créer les messages pour chaque contact
+        messages_created = 0
+        for contact in contacts:
+            try:
+                db.create_message({
+                    "campaign_id": campaign_id,
+                    "contact_id": contact["id"],
+                    "content": campaign.get("message_1", ""),
+                    "status": "pending",
+                    "message_type": "message_1"
+                })
+                messages_created += 1
+            except Exception as e:
+                logger.error(f"Erreur création message pour contact {contact['id']}: {e}")
+                # Continuer avec les autres contacts
+        
+        if messages_created == 0:
+            # Aucun message créé, rollback
+            db.update_campaign(campaign_id, {"status": "draft"})
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Impossible de créer les messages. Veuillez réessayer."
+            )
+        
+        logger.info(
+            f"Campagne {campaign_id} lancée avec {messages_created} messages "
+            f"par utilisateur {current_user['id']}"
+        )
+        
+        # Déclencher l'envoi asynchrone via Celery (utilise twilio_service - Exigence 7.1, 7.4)
+        send_campaign_messages.delay(campaign_id)
+        logger.info(f"Tâche Celery d'envoi créée pour campagne {campaign_id}")
+        
+        return {
             "campaign_id": campaign_id,
-            "contact_id": contact["id"],
-            "content": campaign.get("message_1", ""),
-            "status": "pending",
-            "message_type": "message_1"
-        })
-    
-    logger.info(
-        f"Campagne {campaign_id} lancée avec {len(contacts)} messages "
-        f"par utilisateur {current_user['id']}"
-    )
-    
-    # Déclencher l'envoi asynchrone via Celery (utilise twilio_service - Exigence 7.1, 7.4)
-    send_campaign_messages.delay(campaign_id)
-    logger.info(f"Tâche Celery d'envoi créée pour campagne {campaign_id}")
-    
-    return {
-        "campaign_id": campaign_id,
-        "status": "sending",
-        "total_messages": len(contacts),
-        "message": f"Envoi lancé pour {len(contacts)} destinataires"
-    }
+            "status": "sending",
+            "total_messages": messages_created,
+            "message": f"Envoi lancé pour {messages_created} destinataires"
+        }
+        
+    except HTTPException:
+        # Re-raise les HTTPException sans modification
+        raise
+    except Exception as e:
+        # Erreur inattendue - rollback et log
+        logger.exception(f"Erreur inattendue lors du lancement de la campagne {campaign_id}: {e}")
+        try:
+            db.update_campaign(campaign_id, {"status": "draft"})
+        except Exception:
+            pass  # Ignorer les erreurs de rollback
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Erreur lors du lancement de la campagne. Veuillez réessayer."
+        )
+    finally:
+        # Libérer le verrou après le lancement (la tâche Celery continue en arrière-plan)
+        if lock_acquired:
+            try:
+                monitoring_service.release_campaign_lock(campaign_id, current_user["id"])
+            except Exception as e:
+                logger.error(f"Erreur libération verrou campagne {campaign_id}: {e}")
 
 
 @router.get("/{campaign_id}/stats", response_model=CampaignStats)
@@ -434,9 +517,16 @@ async def get_campaign_stats(
     message_stats = db.get_campaign_message_stats(campaign_id)
     
     total = message_stats["total"]
+    success_count = message_stats["delivered"] + message_stats["read"]
     success_rate = 0.0
     if total > 0:
-        success_rate = (message_stats["delivered"] + message_stats["read"]) / total * 100
+        success_rate = success_count / total * 100
+    
+    # Récupérer le nombre d'interactions pour cette campagne
+    interaction_count = db.get_campaign_interaction_count(campaign_id)
+    
+    # Récupérer les détails des messages pour l'affichage
+    messages = db.get_campaign_messages_with_contacts(campaign_id)
     
     return CampaignStats(
         campaign_id=campaign_id,
@@ -446,7 +536,10 @@ async def get_campaign_stats(
         read_count=message_stats["read"],
         failed_count=message_stats["failed"],
         pending_count=message_stats["pending"],
-        success_rate=success_rate
+        success_rate=success_rate,
+        success_count=success_count,
+        interaction_count=interaction_count,
+        messages=messages
     )
 
 
@@ -499,3 +592,119 @@ async def retry_failed_messages(
         retried_count=len(failed_messages),
         message=f"{len(failed_messages)} message(s) remis en file d'attente"
     )
+
+
+@router.post("/{campaign_id}/relaunch", response_model=dict)
+async def relaunch_campaign(
+    campaign_id: int,
+    db: SupabaseDB = Depends(get_supabase_db),
+    current_user: Dict = Depends(get_current_user)
+) -> dict:
+    """
+    Relance une campagne terminée ou échouée.
+    
+    Cette action :
+    1. Vérifie que la campagne est en statut "completed" ou "failed"
+    2. Supprime tous les anciens messages de la campagne
+    3. Remet les compteurs à zéro
+    4. Recrée les messages pour tous les contacts
+    5. Lance l'envoi via Celery
+    
+    Requirements: 5.1 - Any user can relaunch any campaign
+    """
+    from app.supabase_client import get_supabase_client
+    
+    campaign = db.get_campaign_by_id(campaign_id)
+    
+    if not campaign:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Campagne non trouvée"
+        )
+    
+    # Vérifier que la campagne peut être relancée
+    if campaign.get("status") not in ("completed", "failed"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Seules les campagnes terminées ou échouées peuvent être relancées (statut actuel: {campaign.get('status')})"
+        )
+    
+    try:
+        # Récupérer les contacts pour cette campagne
+        contacts = db.get_contacts_for_campaign(campaign_id)
+        total_messages = len(contacts)
+        
+        if total_messages == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Aucun contact à contacter dans cette campagne"
+            )
+        
+        # Supprimer tous les anciens messages de cette campagne
+        client = get_supabase_client()
+        delete_response = client.table("messages").delete().eq("campaign_id", campaign_id).execute()
+        deleted_count = len(delete_response.data) if delete_response.data else 0
+        logger.info(f"Suppression de {deleted_count} anciens messages pour campagne {campaign_id}")
+        
+        # Remettre les compteurs à zéro et changer le statut
+        db.update_campaign(campaign_id, {
+            "status": "sending",
+            "sent_count": 0,
+            "delivered_count": 0,
+            "read_count": 0,
+            "failed_count": 0
+        })
+        
+        # Créer les nouveaux messages pour chaque contact
+        messages_created = 0
+        for contact in contacts:
+            try:
+                db.create_message({
+                    "campaign_id": campaign_id,
+                    "contact_id": contact["id"],
+                    "content": campaign.get("message_1", ""),
+                    "status": "pending",
+                    "message_type": "message_1"
+                })
+                messages_created += 1
+            except Exception as e:
+                logger.error(f"Erreur création message pour contact {contact['id']}: {e}")
+        
+        if messages_created == 0:
+            # Aucun message créé, rollback
+            db.update_campaign(campaign_id, {"status": "failed"})
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Impossible de créer les messages. Veuillez réessayer."
+            )
+        
+        logger.info(
+            f"Campagne {campaign_id} relancée avec {messages_created} messages "
+            f"par utilisateur {current_user['id']}"
+        )
+        
+        # Déclencher l'envoi asynchrone via Celery
+        send_campaign_messages.delay(campaign_id)
+        logger.info(f"Tâche Celery d'envoi créée pour relance campagne {campaign_id}")
+        
+        return {
+            "campaign_id": campaign_id,
+            "status": "sending",
+            "total_messages": messages_created,
+            "deleted_messages": deleted_count,
+            "message": f"Campagne relancée pour {messages_created} destinataires"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Erreur inattendue lors de la relance de la campagne {campaign_id}: {e}")
+        try:
+            db.update_campaign(campaign_id, {"status": "failed"})
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erreur lors de la relance de la campagne: {str(e)}"
+        )
+

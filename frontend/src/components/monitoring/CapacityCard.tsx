@@ -6,7 +6,7 @@ import { Users, AlertTriangle, XCircle } from "lucide-react";
 interface CapacityCardProps {
   /** Estimated number of contacts that can still be contacted today */
   remainingCapacity: number;
-  /** Number of messages remaining before limit (180 - total_sent) */
+  /** Number of messages remaining before limit (500 - total_sent) */
   remainingMessages: number;
   /** Current interaction rate (message_2 / message_1) */
   interactionRate: number;
@@ -125,7 +125,7 @@ export function CapacityCard({
       {/* Details */}
       <div className="space-y-1">
         <p className="text-xs text-[#6B7280]">
-          {remainingMessages} messages restants sur 180
+          {remainingMessages} messages restants sur 1000
         </p>
         <p className="text-xs text-[#9CA3AF]">
           Taux d&apos;interaction : {(interactionRate * 100).toFixed(1)}%

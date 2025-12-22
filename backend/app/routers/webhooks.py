@@ -469,7 +469,13 @@ async def _schedule_message_2_wassenger(
     db: SupabaseDB
 ) -> None:
     """
-    Programme l'envoi du Message 2 via une tâche Celery (pour Wassenger).
+    Envoie le Message 2 IMMÉDIATEMENT suite à une interaction du contact.
+    
+    LOGIQUE:
+    - Le contact a répondu au Message 1 dans les 24h
+    - On envoie le Message 2 immédiatement pour continuer la conversation
+    - Si le contact ne répond pas dans les 24h, on n'envoie PAS le Message 2
+      (la campagne se termine pour ce contact)
     
     Args:
         campaign_id: ID de la campagne
@@ -477,7 +483,7 @@ async def _schedule_message_2_wassenger(
         contact: Données du contact
         db: Instance de la base de données
     
-    Requirements: 4.4, 4.5
+    Requirements: 4.4, 4.5 - Envoyer Message 2 si interaction dans les 24h
     """
     try:
         client = db.client
@@ -487,16 +493,16 @@ async def _schedule_message_2_wassenger(
         campaign = campaign_response.data[0] if campaign_response.data else None
         
         if not campaign:
-            logger.error(f"Campagne {campaign_id} non trouvée pour Message 2 (Wassenger)")
+            logger.warning(f"Campagne {campaign_id} non trouvée pour Message 2")
             return
         
+        # Vérifier si la campagne a un Message 2 configuré
         message_2_content = campaign.get("message_2")
-        
         if not message_2_content:
-            logger.info(f"Pas de Message 2 configuré pour la campagne {campaign_id}")
+            logger.info(f"Pas de Message 2 configuré pour campagne {campaign_id}")
             return
         
-        # Créer l'enregistrement du Message 2 dans la base de données
+        # Créer le Message 2 dans la base de données
         message_data = {
             "campaign_id": campaign_id,
             "contact_id": contact_id,
@@ -508,30 +514,33 @@ async def _schedule_message_2_wassenger(
         
         new_message = db.create_message(message_data)
         
-        if new_message:
-            message_id = new_message["id"]
-            logger.info(f"Message 2 créé (Wassenger): id={message_id} pour contact {contact_id}")
-            
-            # Importer et créer la tâche Celery pour l'envoi
-            # Note: L'import est fait ici pour éviter les imports circulaires
-            from app.tasks.message_tasks import send_single_message
-            
-            # Programmer l'envoi du Message 2 (texte libre, pas un template)
-            send_single_message.apply_async(
-                args=[message_id],
-                kwargs={
-                    "is_template": False,
-                    "template_name": None
-                },
-                countdown=5  # Petit délai pour éviter les problèmes de timing
-            )
-            
-            logger.info(f"Tâche Celery créée pour Message 2 (Wassenger): message_id={message_id}")
-        else:
-            logger.error(f"Échec création Message 2 pour contact {contact_id} (Wassenger)")
+        if not new_message:
+            logger.error(f"Échec création Message 2 pour contact {contact_id}, campagne {campaign_id}")
+            return
+        
+        message_2_id = new_message["id"]
+        logger.info(f"Message 2 créé: id={message_2_id} pour contact {contact_id}, campagne {campaign_id}")
+        
+        # Importer la tâche d'envoi
+        from app.tasks.message_tasks import send_single_message
+        
+        # Envoyer le Message 2 immédiatement (avec un petit délai de 2s pour le rate limit)
+        send_single_message.apply_async(
+            args=[message_2_id],
+            kwargs={
+                "is_template": False,
+                "template_name": None
+            },
+            countdown=2  # 2 secondes de délai pour respecter le rate limit
+        )
+        
+        logger.info(
+            f"Message 2 envoyé immédiatement pour contact {contact_id}, campagne {campaign_id} "
+            f"(contact a répondu au Message 1)"
+        )
             
     except Exception as e:
-        logger.exception(f"Erreur lors de la programmation du Message 2 (Wassenger): {str(e)}")
+        logger.exception(f"Erreur lors de l'envoi du Message 2 (Wassenger): {str(e)}")
 
 
 async def process_wassenger_status(

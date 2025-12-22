@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -30,6 +30,7 @@ export default function LoginPage() {
   const { login, isAuthenticated, isLoading: authLoading } = useAuth();
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const hasRedirected = useRef(false);
 
   const {
     register,
@@ -44,7 +45,9 @@ export default function LoginPage() {
   });
 
   useEffect(() => {
-    if (!authLoading && isAuthenticated) {
+    // Éviter les redirections multiples
+    if (!authLoading && isAuthenticated && !hasRedirected.current) {
+      hasRedirected.current = true;
       router.push("/dashboard");
     }
   }, [isAuthenticated, authLoading, router]);
@@ -56,6 +59,7 @@ export default function LoginPage() {
     const result = await login(data);
 
     if (result.success) {
+      hasRedirected.current = true;
       router.push("/dashboard");
     } else {
       setError(result.error || "Erreur de connexion");
@@ -73,7 +77,11 @@ export default function LoginPage() {
   }
 
   if (isAuthenticated) {
-    return null;
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[#F0F9FF]">
+        <div className="h-10 w-10 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
+      </div>
+    );
   }
 
   return (

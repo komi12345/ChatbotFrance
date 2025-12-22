@@ -7,6 +7,8 @@ import type { User, LoginRequest, LoginResponse, AuthState } from "@/types/auth"
 
 // Clés localStorage
 const TOKEN_KEY = "access_token";
+const REFRESH_TOKEN_KEY = "refresh_token";
+const TOKEN_EXPIRY_KEY = "token_expiry";
 const USER_KEY = "user";
 
 /**
@@ -41,8 +43,7 @@ export function useAuth() {
           });
         } catch {
           // Données corrompues, nettoyer
-          localStorage.removeItem(TOKEN_KEY);
-          localStorage.removeItem(USER_KEY);
+          clearAuthData();
           setAuthState({
             user: null,
             token: null,
@@ -63,6 +64,15 @@ export function useAuth() {
     initAuth();
   }, []);
 
+  /**
+   * Nettoie toutes les données d'authentification
+   */
+  const clearAuthData = useCallback(() => {
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(REFRESH_TOKEN_KEY);
+    localStorage.removeItem(TOKEN_EXPIRY_KEY);
+    localStorage.removeItem(USER_KEY);
+  }, []);
 
   /**
    * Connexion utilisateur
@@ -74,10 +84,15 @@ export function useAuth() {
       setAuthState((prev) => ({ ...prev, isLoading: true }));
 
       const response = await api.post<LoginResponse>("/auth/login", credentials);
-      const { access_token, user } = response.data;
+      const { access_token, refresh_token, expires_in, user } = response.data;
 
       // Stocker dans localStorage
       localStorage.setItem(TOKEN_KEY, access_token);
+      if (refresh_token) {
+        localStorage.setItem(REFRESH_TOKEN_KEY, refresh_token);
+      }
+      // Stocker l'expiration du token (timestamp en ms)
+      localStorage.setItem(TOKEN_EXPIRY_KEY, String(Date.now() + expires_in * 1000));
       localStorage.setItem(USER_KEY, JSON.stringify(user));
 
       setAuthState({
@@ -117,8 +132,7 @@ export function useAuth() {
    * Déconnexion utilisateur
    */
   const logout = useCallback(() => {
-    localStorage.removeItem(TOKEN_KEY);
-    localStorage.removeItem(USER_KEY);
+    clearAuthData();
 
     setAuthState({
       user: null,
@@ -128,7 +142,7 @@ export function useAuth() {
     });
 
     router.push("/login");
-  }, [router]);
+  }, [router, clearAuthData]);
 
   /**
    * Récupérer l'utilisateur courant depuis l'API
@@ -144,11 +158,17 @@ export function useAuth() {
 
       return user;
     } catch {
-      // Token invalide ou expiré
-      logout();
+      // Token invalide ou expiré - ne pas appeler logout ici pour éviter la boucle
+      clearAuthData();
+      setAuthState({
+        user: null,
+        token: null,
+        isAuthenticated: false,
+        isLoading: false,
+      });
       return null;
     }
-  }, [logout]);
+  }, [clearAuthData]);
 
   /**
    * Vérifier si l'utilisateur est Super Admin

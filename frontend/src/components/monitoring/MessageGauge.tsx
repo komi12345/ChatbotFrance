@@ -6,7 +6,7 @@ import type { AlertLevel } from "@/types/monitoring";
 interface MessageGaugeProps {
   /** Number of messages sent today */
   sent: number;
-  /** Daily message limit (default: 180) */
+  /** Daily message limit (default: 1000) */
   limit?: number;
   /** Current alert level */
   alertLevel: AlertLevel;
@@ -55,11 +55,11 @@ function getAlertColors(level: AlertLevel): {
 
 /**
  * Circular gauge component displaying messages sent vs daily limit
- * Requirements: 4.1 - Display a gauge showing messages sent vs daily limit (180)
+ * Requirements: 4.1 - Display a gauge showing messages sent vs daily limit (1000)
  */
 export function MessageGauge({
   sent,
-  limit = 180,
+  limit = 1000,
   alertLevel,
   className,
   isLoading = false,

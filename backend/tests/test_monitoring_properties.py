@@ -25,8 +25,8 @@ hyp_settings.load_profile("ci")
 # Strategy for message types
 message_type_strategy = st.sampled_from(["message_1", "message_2"])
 
-# Strategy for counter values (0-200 to test around the 180 limit)
-counter_value_strategy = st.integers(min_value=0, max_value=250)
+# Strategy for counter values (0-1200 to test around the 1000 limit)
+counter_value_strategy = st.integers(min_value=0, max_value=1200)
 
 # Strategy for message counts (non-negative)
 message_count_strategy = st.integers(min_value=0, max_value=200)
@@ -189,7 +189,7 @@ class TestDailyLimitBlockingProperty:
     """
     Property 2: Daily Limit Blocking
     
-    *For any* Daily_Message_Counter value >= 180, all subsequent calls to
+    *For any* Daily_Message_Counter value >= 1000, all subsequent calls to
     `can_send_message()` SHALL return `(False, "daily_limit_reached")` until
     the counter is reset.
     
@@ -197,13 +197,13 @@ class TestDailyLimitBlockingProperty:
     **Validates: Requirements 2.2, 2.3**
     """
 
-    @given(total_sent=st.integers(min_value=180, max_value=500))
+    @given(total_sent=st.integers(min_value=1000, max_value=1400))
     def test_blocks_when_at_or_above_limit(self, total_sent: int):
         """
         **Feature: whatsapp-monitoring, Property 2: Daily Limit Blocking**
         **Validates: Requirements 2.2, 2.3**
         
-        For any total_sent >= 180, can_send_message() should return
+        For any total_sent >= 1000, can_send_message() should return
         (False, "daily_limit_reached").
         """
         from app.services.monitoring_service import MonitoringService, DailyStats
@@ -234,13 +234,13 @@ class TestDailyLimitBlockingProperty:
         assert error_msg == "daily_limit_reached", \
             f"Expected error_msg='daily_limit_reached', got '{error_msg}'"
 
-    @given(total_sent=st.integers(min_value=0, max_value=179))
+    @given(total_sent=st.integers(min_value=0, max_value=999))
     def test_allows_when_below_limit(self, total_sent: int):
         """
         **Feature: whatsapp-monitoring, Property 2: Daily Limit Blocking**
         **Validates: Requirements 2.2, 2.3**
         
-        For any total_sent < 180, can_send_message() should return
+        For any total_sent < 1000, can_send_message() should return
         (True, "").
         """
         from app.services.monitoring_service import MonitoringService, DailyStats
@@ -270,35 +270,35 @@ class TestDailyLimitBlockingProperty:
         assert error_msg == "", \
             f"Expected error_msg='', got '{error_msg}'"
 
-    @given(total_sent=st.integers(min_value=180, max_value=500))
+    @given(total_sent=st.integers(min_value=1000, max_value=1400))
     def test_exact_limit_boundary(self, total_sent: int):
         """
         **Feature: whatsapp-monitoring, Property 2: Daily Limit Blocking**
         **Validates: Requirements 2.2, 2.3**
         
-        For total_sent exactly at 180, can_send_message() should block.
+        For total_sent exactly at 1000, can_send_message() should block.
         """
         from app.services.monitoring_service import MonitoringService, DailyStats
         
         service = MonitoringService.__new__(MonitoringService)
         service.redis_url = "redis://localhost:6379/0"
         
-        # Test exactly at 180
+        # Test exactly at 1000
         mock_stats = DailyStats(
             date="2024-12-09",
-            message_1_count=90,
-            message_2_count=90,
+            message_1_count=500,
+            message_2_count=500,
             error_count=0
         )
         
         with patch.object(service, 'get_daily_stats', return_value=mock_stats):
             can_send, error_msg = service.can_send_message()
         
-        # Property: should be blocked at exactly 180
+        # Property: should be blocked at exactly 1000
         assert can_send is False, \
-            f"Expected can_send=False at limit 180"
+            f"Expected can_send=False at limit 1000"
         assert error_msg == "daily_limit_reached", \
-            f"Expected 'daily_limit_reached' at limit 180"
+            f"Expected 'daily_limit_reached' at limit 1000"
 
 
 
@@ -307,22 +307,22 @@ class TestAlertLevelCalculationProperty:
     Property 3: Alert Level Calculation
     
     *For any* Daily_Message_Counter value N:
-    - If 0 <= N <= 135, alert_level SHALL be "ok"
-    - If 136 <= N <= 162, alert_level SHALL be "attention"
-    - If 163 <= N <= 180, alert_level SHALL be "danger"
-    - If N > 180, alert_level SHALL be "blocked"
+    - If 0 <= N <= 750, alert_level SHALL be "ok"
+    - If 751 <= N <= 900, alert_level SHALL be "attention"
+    - If 901 <= N <= 1000, alert_level SHALL be "danger"
+    - If N > 1000, alert_level SHALL be "blocked"
     
     **Feature: whatsapp-monitoring, Property 3: Alert Level Calculation**
     **Validates: Requirements 3.1, 3.2, 3.3, 3.4**
     """
 
-    @given(total_sent=st.integers(min_value=0, max_value=135))
-    def test_ok_level_for_0_to_135(self, total_sent: int):
+    @given(total_sent=st.integers(min_value=0, max_value=750))
+    def test_ok_level_for_0_to_750(self, total_sent: int):
         """
         **Feature: whatsapp-monitoring, Property 3: Alert Level Calculation**
         **Validates: Requirements 3.1**
         
-        For any total_sent in [0, 135], alert_level should be "ok".
+        For any total_sent in [0, 750], alert_level should be "ok".
         """
         from app.services.monitoring_service import MonitoringService, AlertLevel
         
@@ -331,13 +331,13 @@ class TestAlertLevelCalculationProperty:
         assert alert_level == AlertLevel.OK, \
             f"Expected AlertLevel.OK for total_sent={total_sent}, got {alert_level}"
 
-    @given(total_sent=st.integers(min_value=136, max_value=162))
-    def test_attention_level_for_136_to_162(self, total_sent: int):
+    @given(total_sent=st.integers(min_value=751, max_value=900))
+    def test_attention_level_for_751_to_900(self, total_sent: int):
         """
         **Feature: whatsapp-monitoring, Property 3: Alert Level Calculation**
         **Validates: Requirements 3.2**
         
-        For any total_sent in [136, 162], alert_level should be "attention".
+        For any total_sent in [751, 900], alert_level should be "attention".
         """
         from app.services.monitoring_service import MonitoringService, AlertLevel
         
@@ -346,13 +346,13 @@ class TestAlertLevelCalculationProperty:
         assert alert_level == AlertLevel.ATTENTION, \
             f"Expected AlertLevel.ATTENTION for total_sent={total_sent}, got {alert_level}"
 
-    @given(total_sent=st.integers(min_value=163, max_value=180))
-    def test_danger_level_for_163_to_180(self, total_sent: int):
+    @given(total_sent=st.integers(min_value=901, max_value=1000))
+    def test_danger_level_for_901_to_1000(self, total_sent: int):
         """
         **Feature: whatsapp-monitoring, Property 3: Alert Level Calculation**
         **Validates: Requirements 3.3**
         
-        For any total_sent in [163, 180], alert_level should be "danger".
+        For any total_sent in [901, 1000], alert_level should be "danger".
         """
         from app.services.monitoring_service import MonitoringService, AlertLevel
         
@@ -361,13 +361,13 @@ class TestAlertLevelCalculationProperty:
         assert alert_level == AlertLevel.DANGER, \
             f"Expected AlertLevel.DANGER for total_sent={total_sent}, got {alert_level}"
 
-    @given(total_sent=st.integers(min_value=181, max_value=500))
-    def test_blocked_level_for_above_180(self, total_sent: int):
+    @given(total_sent=st.integers(min_value=1001, max_value=1400))
+    def test_blocked_level_for_above_1000(self, total_sent: int):
         """
         **Feature: whatsapp-monitoring, Property 3: Alert Level Calculation**
         **Validates: Requirements 3.4**
         
-        For any total_sent > 180, alert_level should be "blocked".
+        For any total_sent > 1000, alert_level should be "blocked".
         """
         from app.services.monitoring_service import MonitoringService, AlertLevel
         
@@ -376,7 +376,7 @@ class TestAlertLevelCalculationProperty:
         assert alert_level == AlertLevel.BLOCKED, \
             f"Expected AlertLevel.BLOCKED for total_sent={total_sent}, got {alert_level}"
 
-    @given(total_sent=st.integers(min_value=0, max_value=500))
+    @given(total_sent=st.integers(min_value=0, max_value=1000))
     def test_alert_level_is_always_valid_enum(self, total_sent: int):
         """
         **Feature: whatsapp-monitoring, Property 3: Alert Level Calculation**
@@ -405,7 +405,7 @@ class TestRemainingCapacityFormulaProperty:
     Property 4: Remaining Capacity Formula
     
     *For any* combination of messages_sent (S) and interaction_rate (R) where R >= 0,
-    the remaining_capacity SHALL equal floor((180 - S) / (1 + R)), and SHALL never
+    the remaining_capacity SHALL equal floor((1000 - S) / (1 + R)), and SHALL never
     be negative.
     
     **Feature: whatsapp-monitoring, Property 4: Remaining Capacity Formula**
@@ -413,7 +413,7 @@ class TestRemainingCapacityFormulaProperty:
     """
 
     @given(
-        total_sent=st.integers(min_value=0, max_value=250),
+        total_sent=st.integers(min_value=0, max_value=1200),
         interaction_rate=st.floats(min_value=0.0, max_value=2.0, allow_nan=False, allow_infinity=False)
     )
     def test_remaining_capacity_matches_formula(
@@ -426,7 +426,7 @@ class TestRemainingCapacityFormulaProperty:
         **Validates: Requirements 5.1**
         
         For any total_sent and interaction_rate >= 0, remaining_capacity should
-        equal floor((180 - total_sent) / (1 + interaction_rate)).
+        equal floor((1000 - total_sent) / (1 + interaction_rate)).
         """
         import math
         from app.services.monitoring_service import MonitoringService
@@ -436,7 +436,7 @@ class TestRemainingCapacityFormulaProperty:
         )
         
         # Calculate expected value using the formula
-        remaining_messages = 180 - total_sent
+        remaining_messages = 1000 - total_sent
         if remaining_messages <= 0:
             expected = 0
         else:
@@ -447,7 +447,7 @@ class TestRemainingCapacityFormulaProperty:
             f"Expected {expected} for total_sent={total_sent}, rate={interaction_rate}, got {capacity}"
 
     @given(
-        total_sent=st.integers(min_value=0, max_value=250),
+        total_sent=st.integers(min_value=0, max_value=1200),
         interaction_rate=st.floats(min_value=0.0, max_value=2.0, allow_nan=False, allow_infinity=False)
     )
     def test_remaining_capacity_never_negative(
@@ -471,7 +471,7 @@ class TestRemainingCapacityFormulaProperty:
             f"Expected non-negative capacity, got {capacity}"
 
     @given(
-        total_sent=st.integers(min_value=180, max_value=300),
+        total_sent=st.integers(min_value=1000, max_value=1400),
         interaction_rate=st.floats(min_value=0.0, max_value=2.0, allow_nan=False, allow_infinity=False)
     )
     def test_remaining_capacity_zero_when_at_or_above_limit(
@@ -483,7 +483,7 @@ class TestRemainingCapacityFormulaProperty:
         **Feature: whatsapp-monitoring, Property 4: Remaining Capacity Formula**
         **Validates: Requirements 5.1**
         
-        When total_sent >= 180, remaining_capacity should be 0.
+        When total_sent >= 1000, remaining_capacity should be 0.
         """
         from app.services.monitoring_service import MonitoringService
         
@@ -492,10 +492,10 @@ class TestRemainingCapacityFormulaProperty:
         )
         
         assert capacity == 0, \
-            f"Expected 0 for total_sent={total_sent} >= 180, got {capacity}"
+            f"Expected 0 for total_sent={total_sent} >= 1000, got {capacity}"
 
     @given(
-        total_sent=st.integers(min_value=0, max_value=179),
+        total_sent=st.integers(min_value=0, max_value=999),
         interaction_rate=st.floats(min_value=0.0, max_value=2.0, allow_nan=False, allow_infinity=False)
     )
     def test_remaining_capacity_positive_when_below_limit(
@@ -507,7 +507,7 @@ class TestRemainingCapacityFormulaProperty:
         **Feature: whatsapp-monitoring, Property 4: Remaining Capacity Formula**
         **Validates: Requirements 5.1**
         
-        When total_sent < 180, remaining_capacity should be positive (or zero
+        When total_sent < 1000, remaining_capacity should be positive (or zero
         if interaction_rate is very high).
         """
         from app.services.monitoring_service import MonitoringService
@@ -520,13 +520,13 @@ class TestRemainingCapacityFormulaProperty:
         assert capacity >= 0, \
             f"Expected non-negative capacity for total_sent={total_sent}"
 
-    @given(total_sent=st.integers(min_value=0, max_value=179))
+    @given(total_sent=st.integers(min_value=0, max_value=999))
     def test_remaining_capacity_with_zero_interaction_rate(self, total_sent: int):
         """
         **Feature: whatsapp-monitoring, Property 4: Remaining Capacity Formula**
         **Validates: Requirements 5.1**
         
-        When interaction_rate is 0, remaining_capacity should equal (180 - total_sent).
+        When interaction_rate is 0, remaining_capacity should equal (1000 - total_sent).
         """
         from app.services.monitoring_service import MonitoringService
         
@@ -534,7 +534,7 @@ class TestRemainingCapacityFormulaProperty:
             total_sent, 0.0
         )
         
-        expected = 180 - total_sent
+        expected = 1000 - total_sent
         assert capacity == expected, \
             f"Expected {expected} for total_sent={total_sent} with rate=0, got {capacity}"
 
@@ -552,8 +552,8 @@ class TestErrorRateAlertProperty:
     """
 
     @given(
-        total_sent=st.integers(min_value=1, max_value=500),
-        error_count=st.integers(min_value=0, max_value=500)
+        total_sent=st.integers(min_value=1, max_value=1000),
+        error_count=st.integers(min_value=0, max_value=1000)
     )
     def test_error_rate_warning_when_above_threshold(
         self,
@@ -579,7 +579,7 @@ class TestErrorRateAlertProperty:
             f"Expected warning={expected_warning} for total_sent={total_sent}, " \
             f"error_count={error_count}, rate={error_rate:.4f}"
 
-    @given(total_sent=st.integers(min_value=1, max_value=500))
+    @given(total_sent=st.integers(min_value=1, max_value=1000))
     def test_no_warning_when_no_errors(self, total_sent: int):
         """
         **Feature: whatsapp-monitoring, Property 5: Error Rate Alert**
@@ -595,7 +595,7 @@ class TestErrorRateAlertProperty:
             f"Expected no warning with 0 errors, got warning={warning}"
 
     @given(
-        total_sent=st.integers(min_value=10, max_value=500)
+        total_sent=st.integers(min_value=10, max_value=1000)
     )
     def test_warning_at_boundary(self, total_sent: int):
         """
@@ -632,7 +632,7 @@ class TestErrorRateAlertProperty:
             assert warning_above_10 is True, \
                 f"Expected warning at rate={actual_rate_above:.4f} (> 10%)"
 
-    @given(error_count=st.integers(min_value=0, max_value=500))
+    @given(error_count=st.integers(min_value=0, max_value=1000))
     def test_no_warning_when_total_sent_zero(self, error_count: int):
         """
         **Feature: whatsapp-monitoring, Property 5: Error Rate Alert**
@@ -648,8 +648,8 @@ class TestErrorRateAlertProperty:
             f"Expected no warning when total_sent=0, got warning={warning}"
 
     @given(
-        total_sent=st.integers(min_value=1, max_value=500),
-        error_count=st.integers(min_value=0, max_value=500)
+        total_sent=st.integers(min_value=1, max_value=1000),
+        error_count=st.integers(min_value=0, max_value=1000)
     )
     def test_error_rate_warning_returns_boolean(
         self,

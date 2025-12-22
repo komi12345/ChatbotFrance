@@ -33,17 +33,17 @@ async def lifespan(app: FastAPI):
     logger.info(f"Démarrage de l'application en mode {settings.ENVIRONMENT}")
     logger.info(f"CORS autorisé pour: {settings.allowed_origins_list}")
     
-    # Validation de la configuration Gupshup au démarrage
+    # Validation de la configuration Wassenger au démarrage
     try:
         validate_config_on_startup()
-        logger.info("Configuration Gupshup validée avec succès")
+        logger.info("Configuration Wassenger validée avec succès")
     except ValueError as e:
         logger.error(str(e))
         # En mode développement, on continue malgré l'erreur pour permettre les tests
         if settings.ENVIRONMENT == "production":
             raise
         else:
-            logger.warning("Mode développement : l'application continue malgré la configuration Gupshup incomplète")
+            logger.warning("Mode développement : l'application continue malgré la configuration Wassenger incomplète")
     
     yield
     # Shutdown

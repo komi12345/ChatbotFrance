@@ -1,8 +1,18 @@
 """
 Client Supabase - Connexion à la base de données via l'API REST Supabase
 Remplace SQLAlchemy pour une meilleure compatibilité réseau
+
+Thread-safe: Utilise threading.local() pour les connexions par thread
+
+ROBUSTESSE 2025:
+- Validation des entrées pour prévenir les injections
+- Gestion des erreurs de connexion avec retry
+- Timeouts configurables
+- Logging détaillé pour le debugging
 """
 import logging
+import threading
+import re
 from functools import lru_cache
 from typing import Optional, Any, Dict, List
 from supabase import create_client, Client
@@ -10,29 +20,129 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Instance globale du client Supabase
-_supabase_client: Optional[Client] = None
+# Thread-local storage pour les clients Supabase
+_thread_local = threading.local()
+
+# ==========================================================================
+# ROBUSTESSE - Validation des entrées
+# ==========================================================================
+
+def sanitize_string(value: str, max_length: int = 1000) -> str:
+    """
+    Nettoie une chaîne de caractères pour éviter les injections.
+    
+    Args:
+        value: Chaîne à nettoyer
+        max_length: Longueur maximale autorisée
+    
+    Returns:
+        Chaîne nettoyée
+    """
+    if not isinstance(value, str):
+        return str(value)[:max_length]
+    
+    # Tronquer si trop long
+    if len(value) > max_length:
+        value = value[:max_length]
+    
+    # Supprimer les caractères de contrôle (sauf newline et tab)
+    value = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', value)
+    
+    return value
+
+
+def validate_id(value: Any, field_name: str = "id") -> int:
+    """
+    Valide qu'une valeur est un ID entier positif.
+    
+    Args:
+        value: Valeur à valider
+        field_name: Nom du champ pour le message d'erreur
+    
+    Returns:
+        ID validé
+    
+    Raises:
+        ValueError: Si la valeur n'est pas un ID valide
+    """
+    try:
+        id_value = int(value)
+        if id_value <= 0:
+            raise ValueError(f"{field_name} doit être un entier positif")
+        return id_value
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"{field_name} invalide: {value}") from e
+
+
+def validate_phone_number(phone: str) -> str:
+    """
+    Valide et nettoie un numéro de téléphone.
+    
+    Args:
+        phone: Numéro de téléphone à valider
+    
+    Returns:
+        Numéro nettoyé
+    
+    Raises:
+        ValueError: Si le numéro est invalide
+    """
+    if not phone:
+        raise ValueError("Numéro de téléphone requis")
+    
+    # Nettoyer le numéro
+    phone_clean = re.sub(r'[^\d+]', '', phone)
+    
+    # Vérifier le format
+    if not re.match(r'^\+?\d{8,15}$', phone_clean):
+        raise ValueError(f"Format de numéro invalide: {phone}")
+    
+    return phone_clean
+
+
+def validate_email(email: str) -> str:
+    """
+    Valide et nettoie une adresse email.
+    
+    Args:
+        email: Email à valider
+    
+    Returns:
+        Email nettoyé
+    
+    Raises:
+        ValueError: Si l'email est invalide
+    """
+    if not email:
+        raise ValueError("Email requis")
+    
+    email = email.strip().lower()
+    
+    # Validation basique du format email
+    if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email):
+        raise ValueError(f"Format d'email invalide: {email}")
+    
+    return email
 
 
 def get_supabase_client() -> Client:
     """
-    Retourne l'instance singleton du client Supabase.
+    Retourne une instance du client Supabase thread-safe.
+    Chaque thread obtient sa propre instance pour éviter les problèmes de concurrence.
     Utilise la clé service_role pour avoir accès complet aux données.
     """
-    global _supabase_client
-    
-    if _supabase_client is None:
+    if not hasattr(_thread_local, 'supabase_client') or _thread_local.supabase_client is None:
         try:
-            _supabase_client = create_client(
+            _thread_local.supabase_client = create_client(
                 settings.SUPABASE_URL,
                 settings.SUPABASE_SERVICE_ROLE_KEY
             )
-            logger.info("Client Supabase initialisé avec succès")
+            logger.debug(f"Client Supabase initialisé pour thread {threading.current_thread().name}")
         except Exception as e:
             logger.error(f"Erreur lors de l'initialisation du client Supabase: {e}")
             raise
     
-    return _supabase_client
+    return _thread_local.supabase_client
 
 
 class SupabaseDB:
@@ -418,6 +528,48 @@ class SupabaseDB:
         """Récupère les messages échoués d'une campagne"""
         response = self.client.table("messages").select("*").eq("campaign_id", campaign_id).eq("status", "failed").execute()
         return response.data or []
+    
+    def get_campaign_interaction_count(self, campaign_id: int) -> int:
+        """Compte le nombre d'interactions pour une campagne"""
+        # Les interactions sont liées aux messages de la campagne
+        # On compte les interactions dont le message_id appartient à cette campagne
+        messages_response = self.client.table("messages").select("id").eq("campaign_id", campaign_id).execute()
+        if not messages_response.data:
+            return 0
+        
+        message_ids = [m["id"] for m in messages_response.data]
+        
+        # Compter les interactions pour ces messages
+        total_interactions = 0
+        for msg_id in message_ids:
+            count_response = self.client.table("interactions").select("id", count="exact").eq("message_id", msg_id).execute()
+            total_interactions += count_response.count or 0
+        
+        return total_interactions
+    
+    def get_campaign_messages_with_contacts(self, campaign_id: int, limit: int = 100) -> List[Dict]:
+        """Récupère les messages d'une campagne avec les infos des contacts"""
+        response = self.client.table("messages").select(
+            "id, status, message_type, content, error_message, sent_at, contact_id"
+        ).eq("campaign_id", campaign_id).order("created_at", desc=True).limit(limit).execute()
+        
+        messages = []
+        for msg in (response.data or []):
+            # Récupérer les infos du contact
+            contact = self.get_contact_by_id(msg.get("contact_id"))
+            messages.append({
+                "id": msg["id"],
+                "status": msg["status"],
+                "message_type": msg.get("message_type", "message_1"),
+                "content": msg.get("content", ""),
+                "error_message": msg.get("error_message"),
+                "sent_at": msg.get("sent_at"),
+                "contact_id": msg.get("contact_id"),
+                "contact_name": contact.get("name") if contact else None,
+                "contact_phone": contact.get("phone") if contact else None,
+            })
+        
+        return messages
     
     # ==================== INTERACTIONS ====================
     

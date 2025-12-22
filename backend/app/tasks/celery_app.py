@@ -42,18 +42,22 @@ celery_app.conf.update(
     task_acks_late=True,
     task_reject_on_worker_lost=True,
     
-    # Concurrence - limiter pour respecter le rate limiting WhatsApp
-    worker_concurrency=2,
-    worker_prefetch_multiplier=1,
+    # Concurrence - optimisé pour production à grande échelle
+    # Note: Augmenté pour supporter plusieurs campagnes simultanées
+    # Le rate limiting est géré au niveau de l'envoi, pas du worker
+    worker_concurrency=4,  # Augmenté de 2 à 4 pour meilleure scalabilité
+    worker_prefetch_multiplier=2,  # Augmenté pour meilleure utilisation des workers
     
     # Rate limiting global (25 messages par minute = ~0.42 msg/sec)
     task_default_rate_limit=f"{settings.WHATSAPP_RATE_LIMIT_PER_MINUTE}/m",
     
-    # Queues et routing
+    # Queues et routing avec priorités
     task_queues=(
         Queue("default", Exchange("default"), routing_key="default"),
         Queue("messages", Exchange("messages"), routing_key="messages.#"),
+        Queue("messages_high", Exchange("messages_high"), routing_key="messages.high.#"),  # Queue prioritaire
         Queue("retry", Exchange("retry"), routing_key="retry.#"),
+        Queue("verification", Exchange("verification"), routing_key="verify.#"),  # Queue dédiée vérification
     ),
     
     task_default_queue="default",
@@ -75,11 +79,11 @@ celery_app.conf.update(
             "routing_key": "retry.message",
         },
         "app.tasks.message_tasks.verify_whatsapp_task": {
-            "queue": "default",
+            "queue": "verification",
             "routing_key": "verify.single",
         },
         "app.tasks.message_tasks.bulk_verify_task": {
-            "queue": "default",
+            "queue": "verification",
             "routing_key": "verify.bulk",
         },
     },
@@ -101,10 +105,33 @@ celery_app.conf.update(
             "schedule": crontab(hour=0, minute=0),
             "options": {"queue": "default"},
         },
+        # Tâche de nettoyage des verrous expirés (toutes les 10 minutes)
+        "cleanup-expired-locks": {
+            "task": "app.tasks.celery_app.cleanup_expired_locks",
+            "schedule": timedelta(minutes=10),
+            "options": {"queue": "default"},
+        },
+        # Tâche de récupération des campagnes interrompues (toutes les 5 minutes)
+        # ROBUSTESSE: Reprend les campagnes qui ont été interrompues brutalement
+        "recover-interrupted-campaigns": {
+            "task": "app.tasks.celery_app.recover_interrupted_campaigns",
+            "schedule": timedelta(minutes=5),
+            "options": {"queue": "default"},
+        },
+        # Tâche de vérification de santé du système (toutes les 2 minutes)
+        "health-check": {
+            "task": "app.tasks.celery_app.system_health_check",
+            "schedule": timedelta(minutes=2),
+            "options": {"queue": "default"},
+        },
     },
     
     # Configuration pour le scheduler crontab
     beat_schedule_filename="celerybeat-schedule",
+    
+    # Configuration pour la production
+    broker_connection_retry_on_startup=True,
+    broker_connection_max_retries=10,
 )
 
 
@@ -286,3 +313,235 @@ def reset_daily_monitoring():
     except Exception as e:
         logger.error(f"Erreur lors du reset quotidien monitoring: {e}")
         return {"status": "error", "message": str(e)}
+
+
+@celery_app.task(name="app.tasks.celery_app.cleanup_expired_locks")
+def cleanup_expired_locks():
+    """
+    Tâche périodique de nettoyage des verrous expirés.
+    
+    Exécutée toutes les 10 minutes pour nettoyer les verrous
+    qui auraient pu rester bloqués suite à un crash.
+    
+    Requirements: Production scalability - lock cleanup
+    """
+    try:
+        logger.info("Démarrage du nettoyage des verrous expirés")
+        
+        # Les verrous Redis ont un TTL automatique, donc ils expirent naturellement
+        # Cette tâche est principalement pour le logging et la surveillance
+        
+        # Compter les verrous actifs (pattern: campaign:lock:*)
+        redis_client = monitoring_service.redis_client
+        lock_keys = list(redis_client.scan_iter(match="campaign:lock:*"))
+        
+        active_locks = []
+        for key in lock_keys:
+            ttl = redis_client.ttl(key)
+            if ttl > 0:
+                value = redis_client.get(key)
+                active_locks.append({
+                    "key": key,
+                    "value": value,
+                    "ttl": ttl
+                })
+        
+        logger.info(
+            f"Nettoyage verrous terminé: {len(active_locks)} verrous actifs",
+            extra={"active_locks": len(active_locks)}
+        )
+        
+        return {
+            "status": "success",
+            "active_locks": len(active_locks),
+            "locks": active_locks
+        }
+    except Exception as e:
+        logger.error(f"Erreur lors du nettoyage des verrous: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@celery_app.task(name="app.tasks.celery_app.recover_interrupted_campaigns")
+def recover_interrupted_campaigns():
+    """
+    Tâche périodique de récupération des campagnes interrompues.
+    
+    Détecte les campagnes en statut "sending" qui ont des messages "pending"
+    mais aucune tâche Celery active, et relance l'envoi.
+    
+    ROBUSTESSE: Permet de reprendre automatiquement après un crash serveur
+    ou une interruption de connexion.
+    
+    Requirements: Production robustness - automatic recovery
+    """
+    try:
+        from app.supabase_client import get_supabase_client
+        from datetime import datetime, timezone, timedelta
+        
+        logger.info("Démarrage de la récupération des campagnes interrompues")
+        
+        client = get_supabase_client()
+        
+        # Trouver les campagnes en statut "sending"
+        campaigns_response = client.table("campaigns").select("id, name, created_at").eq("status", "sending").execute()
+        sending_campaigns = campaigns_response.data or []
+        
+        recovered_count = 0
+        
+        for campaign in sending_campaigns:
+            campaign_id = campaign["id"]
+            
+            # Vérifier s'il y a des messages pending pour cette campagne
+            pending_response = client.table("messages").select("id", count="exact").eq(
+                "campaign_id", campaign_id
+            ).eq("status", "pending").execute()
+            
+            pending_count = pending_response.count or 0
+            
+            if pending_count == 0:
+                # Pas de messages pending, la campagne devrait être terminée
+                # Mettre à jour le statut
+                client.table("campaigns").update({"status": "completed"}).eq("id", campaign_id).execute()
+                logger.info(f"Campagne {campaign_id} marquée comme terminée (aucun message pending)")
+                continue
+            
+            # Vérifier si des messages ont été envoyés récemment (dernières 10 minutes)
+            # Si oui, la campagne est probablement encore active
+            ten_minutes_ago = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+            
+            recent_sent_response = client.table("messages").select("id", count="exact").eq(
+                "campaign_id", campaign_id
+            ).in_("status", ["sent", "delivered", "read"]).gte("sent_at", ten_minutes_ago).execute()
+            
+            recent_sent_count = recent_sent_response.count or 0
+            
+            if recent_sent_count > 0:
+                # Des messages ont été envoyés récemment, la campagne est active
+                logger.debug(f"Campagne {campaign_id} active ({recent_sent_count} messages envoyés récemment)")
+                continue
+            
+            # La campagne semble interrompue - relancer l'envoi
+            logger.warning(
+                f"Campagne {campaign_id} ({campaign['name']}) semble interrompue: "
+                f"{pending_count} messages pending, aucun envoi récent. Relance..."
+            )
+            
+            # Importer et relancer la tâche d'envoi
+            from app.tasks.message_tasks import send_campaign_messages
+            send_campaign_messages.delay(campaign_id)
+            
+            recovered_count += 1
+        
+        logger.info(
+            f"Récupération terminée: {recovered_count} campagne(s) relancée(s) sur {len(sending_campaigns)} en cours"
+        )
+        
+        return {
+            "status": "success",
+            "sending_campaigns": len(sending_campaigns),
+            "recovered_count": recovered_count
+        }
+        
+    except Exception as e:
+        logger.error(f"Erreur lors de la récupération des campagnes: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@celery_app.task(name="app.tasks.celery_app.system_health_check")
+def system_health_check():
+    """
+    Tâche périodique de vérification de santé du système.
+    
+    Vérifie:
+    - Connexion Redis
+    - Connexion Supabase
+    - État des workers Celery
+    - Taux d'erreur des messages
+    
+    ROBUSTESSE: Permet de détecter les problèmes avant qu'ils ne deviennent critiques.
+    
+    Requirements: Production monitoring - health checks
+    """
+    try:
+        from app.supabase_client import get_supabase_client
+        
+        health_status = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "redis": "unknown",
+            "supabase": "unknown",
+            "error_rate": "unknown",
+            "daily_stats": None
+        }
+        
+        # Vérifier Redis
+        try:
+            redis_client = monitoring_service.redis_client
+            redis_client.ping()
+            health_status["redis"] = "healthy"
+        except Exception as e:
+            health_status["redis"] = f"unhealthy: {str(e)}"
+            logger.error(f"Health check Redis failed: {e}")
+        
+        # Vérifier Supabase
+        try:
+            client = get_supabase_client()
+            # Simple query pour vérifier la connexion
+            client.table("campaigns").select("id").limit(1).execute()
+            health_status["supabase"] = "healthy"
+        except Exception as e:
+            health_status["supabase"] = f"unhealthy: {str(e)}"
+            logger.error(f"Health check Supabase failed: {e}")
+        
+        # Vérifier le taux d'erreur
+        try:
+            stats = monitoring_service.get_daily_stats()
+            health_status["daily_stats"] = {
+                "date": stats.date,
+                "message_1_count": stats.message_1_count,
+                "message_2_count": stats.message_2_count,
+                "error_count": stats.error_count,
+                "total_sent": stats.total_sent
+            }
+            
+            # Calculer le taux d'erreur
+            if stats.total_sent > 0:
+                error_rate = stats.error_count / stats.total_sent
+                if error_rate > 0.10:
+                    health_status["error_rate"] = f"warning: {error_rate:.1%}"
+                    logger.warning(f"Taux d'erreur élevé: {error_rate:.1%}")
+                else:
+                    health_status["error_rate"] = f"healthy: {error_rate:.1%}"
+            else:
+                health_status["error_rate"] = "healthy: no messages sent"
+                
+        except Exception as e:
+            health_status["error_rate"] = f"unknown: {str(e)}"
+            logger.error(f"Health check error rate failed: {e}")
+        
+        # Déterminer le statut global
+        is_healthy = (
+            health_status["redis"] == "healthy" and
+            health_status["supabase"] == "healthy" and
+            not health_status["error_rate"].startswith("warning")
+        )
+        
+        health_status["overall"] = "healthy" if is_healthy else "degraded"
+        
+        if not is_healthy:
+            logger.warning(f"System health degraded: {health_status}")
+        else:
+            logger.info(f"System health check passed: {health_status['overall']}")
+        
+        return health_status
+        
+    except Exception as e:
+        logger.error(f"Erreur lors du health check: {e}")
+        return {
+            "status": "error",
+            "message": str(e),
+            "overall": "unhealthy"
+        }
+
+
+# Import datetime pour les nouvelles tâches
+from datetime import datetime, timezone

@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useRef } from "react";
+import { useRouter, usePathname } from "next/navigation";
 import { useAuth } from "@/hooks/useAuth";
 import type { UserRole } from "@/types/auth";
 
@@ -18,13 +18,19 @@ interface ProtectedRouteProps {
  */
 export function ProtectedRoute({ children, allowedRoles }: ProtectedRouteProps) {
   const router = useRouter();
+  const pathname = usePathname();
   const { isAuthenticated, isLoading, user } = useAuth();
+  const hasRedirected = useRef(false);
 
   useEffect(() => {
     if (isLoading) return;
 
+    // Éviter les redirections multiples
+    if (hasRedirected.current) return;
+
     // Rediriger vers login si non authentifié
     if (!isAuthenticated) {
+      hasRedirected.current = true;
       router.push("/login");
       return;
     }
@@ -32,9 +38,15 @@ export function ProtectedRoute({ children, allowedRoles }: ProtectedRouteProps) 
     // Vérifier les rôles si spécifiés
     if (allowedRoles && user && !allowedRoles.includes(user.role)) {
       // Utilisateur authentifié mais rôle non autorisé
+      hasRedirected.current = true;
       router.push("/dashboard");
     }
-  }, [isAuthenticated, isLoading, user, allowedRoles, router]);
+  }, [isAuthenticated, isLoading, user, allowedRoles, router, pathname]);
+
+  // Reset le flag quand le pathname change
+  useEffect(() => {
+    hasRedirected.current = false;
+  }, [pathname]);
 
   // Afficher un loader pendant la vérification
   if (isLoading) {

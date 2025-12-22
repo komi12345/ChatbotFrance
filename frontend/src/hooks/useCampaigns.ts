@@ -45,8 +45,11 @@ export function useCampaigns(params: CampaignFilters = {}) {
 
 /**
  * Hook pour récupérer les détails d'une campagne
+ * Avec polling automatique toutes les 3 secondes si la campagne est en cours d'envoi
  */
-export function useCampaign(id: number) {
+export function useCampaign(id: number, options?: { enablePolling?: boolean }) {
+  const { enablePolling = true } = options || {};
+  
   return useQuery({
     queryKey: campaignKeys.detail(id),
     queryFn: async () => {
@@ -54,14 +57,22 @@ export function useCampaign(id: number) {
       return response.data;
     },
     enabled: !!id,
+    // Polling toutes les 3 secondes si la campagne est en cours
+    refetchInterval: (query) => {
+      if (!enablePolling) return false;
+      const data = query.state.data as Campaign | undefined;
+      // Polling actif seulement si status = "sending"
+      return data?.status === "sending" ? 3000 : false;
+    },
   });
 }
 
 
 /**
  * Hook pour récupérer les statistiques d'une campagne
+ * Avec polling automatique toutes les 3 secondes si la campagne est en cours d'envoi
  */
-export function useCampaignStats(id: number) {
+export function useCampaignStats(id: number, campaignStatus?: string) {
   return useQuery({
     queryKey: campaignKeys.stats(id),
     queryFn: async () => {
@@ -69,6 +80,8 @@ export function useCampaignStats(id: number) {
       return response.data;
     },
     enabled: !!id,
+    // Polling toutes les 3 secondes si la campagne est en cours
+    refetchInterval: campaignStatus === "sending" ? 3000 : false,
   });
 }
 
@@ -204,6 +217,33 @@ export function useForceDeleteCampaign() {
       return id;
     },
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: campaignKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: ["stats"] });
+    },
+  });
+}
+
+/**
+ * Hook pour relancer une campagne terminée ou échouée
+ * Supprime les anciens messages et relance l'envoi pour tous les contacts
+ */
+export function useRelaunchCampaign() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (id: number) => {
+      const response = await api.post<{
+        campaign_id: number;
+        status: string;
+        total_messages: number;
+        deleted_messages: number;
+        message: string;
+      }>(`/campaigns/${id}/relaunch`);
+      return response.data;
+    },
+    onSuccess: (_, id) => {
+      queryClient.invalidateQueries({ queryKey: campaignKeys.detail(id) });
+      queryClient.invalidateQueries({ queryKey: campaignKeys.stats(id) });
       queryClient.invalidateQueries({ queryKey: campaignKeys.lists() });
       queryClient.invalidateQueries({ queryKey: ["stats"] });
     },

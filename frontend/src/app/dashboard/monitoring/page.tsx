@@ -206,7 +206,7 @@ function MonitoringHistoryChart({ data, isLoading = false }: MonitoringChartProp
 /**
  * Monitoring Dashboard Page
  * Requirements: 4.1, 4.2, 4.3, 4.4, 8.3
- * - Displays gauge showing messages sent vs daily limit (180)
+ * - Displays gauge showing messages sent vs daily limit (500)
  * - Displays separate counters for message_1 and message_2
  * - Displays current interaction rate
  * - Displays line chart showing last 7 days
@@ -230,7 +230,7 @@ export default function MonitoringPage() {
               Monitoring WhatsApp 📊
             </h2>
             <p className="text-[#6B7280] mt-1">
-              Suivi en temps réel des messages envoyés (limite : 180/jour)
+              Suivi en temps réel des messages envoyés (limite : 1000/jour)
             </p>
           </div>
           <Button 
@@ -249,7 +249,7 @@ export default function MonitoringPage() {
           <div className="rounded-2xl bg-white p-5 md:p-6 shadow-soft border border-[#E5E7EB]/50 flex items-center justify-center">
             <MessageGauge
               sent={stats?.total_sent ?? 0}
-              limit={stats?.daily_limit ?? 180}
+              limit={stats?.daily_limit ?? 500}
               alertLevel={stats?.alert_level ?? "ok"}
               isLoading={isLoading}
             />
@@ -258,7 +258,7 @@ export default function MonitoringPage() {
           {/* Capacity Card - Takes 1 column */}
           <CapacityCard
             remainingCapacity={stats?.remaining_capacity ?? 0}
-            remainingMessages={stats?.remaining ?? 180}
+            remainingMessages={stats?.remaining ?? 1000}
             interactionRate={stats?.interaction_rate ?? 0}
             isBlocked={stats?.is_blocked ?? false}
             isLoading={isLoading}
@@ -345,7 +345,7 @@ export default function MonitoringPage() {
                 À propos de la limite quotidienne
               </h4>
               <p className="mt-1 text-xs text-blue-700">
-                WhatsApp impose une limite de 180 messages par jour pour les comptes non vérifiés.
+                La limite est configurée à 1000 messages par jour pour protéger votre numéro WhatsApp.
                 Cette limite se réinitialise automatiquement à minuit (UTC).
                 La capacité restante est calculée en tenant compte du taux d&apos;interaction
                 (contacts susceptibles de répondre et déclencher un Message 2).

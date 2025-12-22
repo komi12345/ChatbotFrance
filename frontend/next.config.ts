@@ -1,11 +1,33 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  // Optimisations pour le développement local
   reactCompiler: true,
+  
   typescript: {
-    // Ignorer les erreurs TypeScript pendant le build
+    // Ignorer les erreurs TypeScript pendant le build (accélère le build)
     ignoreBuildErrors: true,
+  },
+  
+  // Optimisations de compilation
+  experimental: {
+    // Optimise le bundling des packages
+    optimizePackageImports: [
+      "lucide-react",
+      "@radix-ui/react-dialog",
+      "@radix-ui/react-select",
+      "@radix-ui/react-alert-dialog",
+      "@radix-ui/react-tooltip",
+      "recharts",
+    ],
+  },
+  
+  // Désactiver la génération de source maps en production (plus rapide)
+  productionBrowserSourceMaps: false,
+  
+  // Optimiser les images
+  images: {
+    unoptimized: true,
   },
 };
 

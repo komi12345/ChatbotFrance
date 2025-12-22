@@ -3,7 +3,7 @@ Service de monitoring WhatsApp - Suivi des messages quotidiens et alertes
 
 Ce service gère :
 - Les compteurs Redis pour le suivi temps réel des messages
-- La limite quotidienne de 180 messages
+- La limite quotidienne de 1000 messages
 - Les niveaux d'alerte visuels
 - Le calcul de capacité restante
 
@@ -12,7 +12,7 @@ Requirements: 1.1, 1.2, 1.5, 2.1, 2.2, 2.3, 3.1-3.4, 5.1, 5.2
 import logging
 import math
 from datetime import datetime, timezone, timedelta
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Dict, Any
 from dataclasses import dataclass
 from enum import Enum
 
@@ -24,16 +24,16 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 # Constantes
-DAILY_MESSAGE_LIMIT = 180
+DAILY_MESSAGE_LIMIT = 1000
 TTL_SECONDS = 48 * 60 * 60  # 48 heures en secondes
 
 
 class AlertLevel(str, Enum):
     """Niveaux d'alerte basés sur le pourcentage de la limite atteinte."""
-    OK = "ok"           # 0-75% (0-135)
-    ATTENTION = "attention"  # 76-90% (136-162)
-    DANGER = "danger"   # 91-100% (163-180)
-    BLOCKED = "blocked"  # >100% (>180)
+    OK = "ok"           # 0-75% (0-750)
+    ATTENTION = "attention"  # 76-90% (751-900)
+    DANGER = "danger"   # 91-100% (901-1000)
+    BLOCKED = "blocked"  # >100% (>1000)
 
 
 @dataclass
@@ -212,12 +212,12 @@ class MonitoringService:
     
     def can_send_message(self) -> Tuple[bool, str]:
         """
-        Vérifie si un message peut être envoyé (limite 180).
+        Vérifie si un message peut être envoyé (limite 1000).
         
         Returns:
             Tuple (can_send, error_message):
-            - (True, "") si compteur < 180
-            - (False, "daily_limit_reached") si compteur >= 180
+            - (True, "") si compteur < 1000
+            - (False, "daily_limit_reached") si compteur >= 1000
         
         Requirements: 2.1, 2.2, 2.3
         """
@@ -238,15 +238,157 @@ class MonitoringService:
             # En cas d'erreur, on autorise par défaut (fail-open)
             return (True, "")
     
+    def acquire_campaign_lock(self, campaign_id: int, user_id: int, ttl: int = 300) -> bool:
+        """
+        Acquiert un verrou distribué pour une campagne.
+        Empêche les modifications/envois simultanés par plusieurs utilisateurs.
+        
+        Args:
+            campaign_id: ID de la campagne
+            user_id: ID de l'utilisateur qui acquiert le verrou
+            ttl: Durée de vie du verrou en secondes (défaut: 5 minutes)
+        
+        Returns:
+            True si le verrou est acquis, False sinon
+        
+        Requirements: Production scalability - distributed locking
+        """
+        try:
+            lock_key = f"campaign:lock:{campaign_id}"
+            lock_value = f"user:{user_id}:{datetime.now(timezone.utc).isoformat()}"
+            
+            # SET NX (set if not exists) avec TTL
+            acquired = self.redis_client.set(lock_key, lock_value, nx=True, ex=ttl)
+            
+            if acquired:
+                logger.info(
+                    f"Verrou campagne {campaign_id} acquis par utilisateur {user_id}",
+                    extra={"campaign_id": campaign_id, "user_id": user_id, "ttl": ttl}
+                )
+            else:
+                # Vérifier qui détient le verrou
+                current_lock = self.redis_client.get(lock_key)
+                logger.warning(
+                    f"Verrou campagne {campaign_id} déjà détenu: {current_lock}",
+                    extra={"campaign_id": campaign_id, "user_id": user_id}
+                )
+            
+            return bool(acquired)
+        except Exception as e:
+            logger.error(f"Erreur acquisition verrou campagne {campaign_id}: {e}")
+            return False
+    
+    def release_campaign_lock(self, campaign_id: int, user_id: int) -> bool:
+        """
+        Libère le verrou d'une campagne.
+        
+        Args:
+            campaign_id: ID de la campagne
+            user_id: ID de l'utilisateur qui libère le verrou
+        
+        Returns:
+            True si le verrou est libéré, False sinon
+        
+        Requirements: Production scalability - distributed locking
+        """
+        try:
+            lock_key = f"campaign:lock:{campaign_id}"
+            
+            # Vérifier que c'est bien l'utilisateur qui détient le verrou
+            current_lock = self.redis_client.get(lock_key)
+            if current_lock and f"user:{user_id}:" in current_lock:
+                self.redis_client.delete(lock_key)
+                logger.info(
+                    f"Verrou campagne {campaign_id} libéré par utilisateur {user_id}",
+                    extra={"campaign_id": campaign_id, "user_id": user_id}
+                )
+                return True
+            else:
+                logger.warning(
+                    f"Tentative de libération verrou campagne {campaign_id} par utilisateur {user_id} non autorisée",
+                    extra={"campaign_id": campaign_id, "user_id": user_id, "current_lock": current_lock}
+                )
+                return False
+        except Exception as e:
+            logger.error(f"Erreur libération verrou campagne {campaign_id}: {e}")
+            return False
+    
+    def get_campaign_lock_info(self, campaign_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Récupère les informations sur le verrou d'une campagne.
+        
+        Args:
+            campaign_id: ID de la campagne
+        
+        Returns:
+            Dict avec user_id et locked_at, ou None si pas de verrou
+        """
+        try:
+            lock_key = f"campaign:lock:{campaign_id}"
+            lock_value = self.redis_client.get(lock_key)
+            
+            if not lock_value:
+                return None
+            
+            # Parse "user:{user_id}:{timestamp}"
+            parts = lock_value.split(":")
+            if len(parts) >= 3:
+                return {
+                    "user_id": int(parts[1]),
+                    "locked_at": parts[2],
+                    "ttl": self.redis_client.ttl(lock_key)
+                }
+            return None
+        except Exception as e:
+            logger.error(f"Erreur lecture verrou campagne {campaign_id}: {e}")
+            return None
+    
+    def reserve_message_quota(self, count: int) -> Tuple[bool, int]:
+        """
+        Réserve un quota de messages de manière atomique.
+        Utilisé pour éviter les dépassements lors de campagnes simultanées.
+        
+        Args:
+            count: Nombre de messages à réserver
+        
+        Returns:
+            Tuple (success, remaining):
+            - (True, remaining) si la réservation est réussie
+            - (False, 0) si le quota est insuffisant
+        
+        Requirements: Production scalability - atomic quota reservation
+        """
+        try:
+            stats = self.get_daily_stats()
+            current_total = stats.total_sent
+            
+            if current_total + count > DAILY_MESSAGE_LIMIT:
+                remaining = max(0, DAILY_MESSAGE_LIMIT - current_total)
+                logger.warning(
+                    f"Quota insuffisant: demandé={count}, disponible={remaining}",
+                    extra={"requested": count, "remaining": remaining}
+                )
+                return (False, remaining)
+            
+            # Réservation réussie - le compteur sera incrémenté lors de l'envoi réel
+            logger.info(
+                f"Quota réservé: {count} messages",
+                extra={"reserved": count, "current_total": current_total}
+            )
+            return (True, DAILY_MESSAGE_LIMIT - current_total - count)
+        except Exception as e:
+            logger.error(f"Erreur réservation quota: {e}")
+            return (False, 0)
+    
     def get_alert_level(self) -> AlertLevel:
         """
         Retourne le niveau d'alerte actuel basé sur le compteur.
         
         Seuils:
-        - 0-135 (0-75%) → "ok" (vert)
-        - 136-162 (76-90%) → "attention" (jaune)
-        - 163-180 (91-100%) → "danger" (rouge)
-        - >180 → "blocked" (gris)
+        - 0-750 (0-75%) → "ok" (vert)
+        - 751-900 (76-90%) → "attention" (jaune)
+        - 901-1000 (91-100%) → "danger" (rouge)
+        - >1000 → "blocked" (gris)
         
         Returns:
             AlertLevel correspondant au compteur actuel
@@ -273,13 +415,13 @@ class MonitoringService:
         Returns:
             AlertLevel correspondant
         """
-        if total_sent > DAILY_MESSAGE_LIMIT:  # > 180
+        if total_sent > DAILY_MESSAGE_LIMIT:  # > 1000
             return AlertLevel.BLOCKED
-        elif total_sent >= 163:  # 163-180 (91-100%)
+        elif total_sent >= 901:  # 901-1000 (91-100%)
             return AlertLevel.DANGER
-        elif total_sent >= 136:  # 136-162 (76-90%)
+        elif total_sent >= 751:  # 751-900 (76-90%)
             return AlertLevel.ATTENTION
-        else:  # 0-135 (0-75%)
+        else:  # 0-750 (0-75%)
             return AlertLevel.OK
     
     def calculate_interaction_rate(self) -> float:
@@ -306,7 +448,7 @@ class MonitoringService:
         """
         Calcule la capacité restante avec le taux d'interaction.
         
-        Formule: floor((180 - sent) / (1 + interaction_rate))
+        Formule: floor((1000 - sent) / (1 + interaction_rate))
         
         Returns:
             Nombre de contacts pouvant encore être contactés (jamais négatif)
@@ -323,7 +465,7 @@ class MonitoringService:
             if remaining_messages <= 0:
                 return 0
             
-            # Formule: floor((180 - sent) / (1 + interaction_rate))
+            # Formule: floor((1000 - sent) / (1 + interaction_rate))
             capacity = math.floor(remaining_messages / (1 + interaction_rate))
             
             return max(0, capacity)

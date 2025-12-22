@@ -6,7 +6,7 @@
  * 
  * Tests that the navigation badge visibility is correctly determined based on
  * the daily message counter value. The badge should be visible if and only if
- * the counter exceeds 135 (75% of the 180 daily limit).
+ * the counter exceeds 750 (75% of the 1000 daily limit).
  */
 
 import { describe, it, expect } from 'vitest'
@@ -15,14 +15,14 @@ import * as fc from 'fast-check'
 /**
  * Determines if the navigation badge should be visible based on message count.
  * This function implements the logic from Requirements 8.2:
- * "WHEN the Daily_Message_Counter exceeds 135 (75%) THEN the navigation link 
+ * "WHEN the Daily_Message_Counter exceeds 750 (75%) THEN the navigation link 
  * SHALL display a warning badge"
  * 
  * @param messageCount - The current daily message counter value
  * @returns true if the badge should be visible, false otherwise
  */
 export function shouldShowNavigationBadge(messageCount: number): boolean {
-  return messageCount > 135;
+  return messageCount > 750;
 }
 
 /**
@@ -33,9 +33,9 @@ export function shouldShowNavigationBadge(messageCount: number): boolean {
  * @returns The alert level string
  */
 export function getAlertLevelFromCount(messageCount: number): 'ok' | 'attention' | 'danger' | 'blocked' {
-  if (messageCount <= 135) return 'ok';
-  if (messageCount <= 162) return 'attention';
-  if (messageCount <= 180) return 'danger';
+  if (messageCount <= 750) return 'ok';
+  if (messageCount <= 900) return 'attention';
+  if (messageCount <= 1000) return 'danger';
   return 'blocked';
 }
 
@@ -45,17 +45,17 @@ describe('Navigation Badge Threshold Property Tests', () => {
    * **Validates: Requirements 8.2**
    * 
    * *For any* Daily_Message_Counter value N, the navigation badge SHALL be 
-   * visible if and only if N > 135.
+   * visible if and only if N > 750.
    */
-  it('should show badge if and only if message count exceeds 135', () => {
+  it('should show badge if and only if message count exceeds 750', () => {
     fc.assert(
       fc.property(
-        fc.integer({ min: 0, max: 300 }),
+        fc.integer({ min: 0, max: 1200 }),
         (messageCount: number) => {
           const shouldShow = shouldShowNavigationBadge(messageCount);
           
-          // Badge should be visible if and only if count > 135
-          if (messageCount > 135) {
+          // Badge should be visible if and only if count > 750
+          if (messageCount > 750) {
             expect(shouldShow).toBe(true);
           } else {
             expect(shouldShow).toBe(false);
@@ -67,46 +67,46 @@ describe('Navigation Badge Threshold Property Tests', () => {
   });
 
   /**
-   * Property: Badge is hidden at exactly 135 messages
+   * Property: Badge is hidden at exactly 750 messages
    * 
-   * Verifies the boundary condition: at exactly 135 messages (75% of limit),
+   * Verifies the boundary condition: at exactly 750 messages (75% of limit),
    * the badge should NOT be visible yet.
    */
-  it('should not show badge at exactly 135 messages (boundary)', () => {
-    expect(shouldShowNavigationBadge(135)).toBe(false);
+  it('should not show badge at exactly 750 messages (boundary)', () => {
+    expect(shouldShowNavigationBadge(750)).toBe(false);
   });
 
   /**
-   * Property: Badge is visible at 136 messages
+   * Property: Badge is visible at 751 messages
    * 
-   * Verifies the boundary condition: at 136 messages (just over 75%),
+   * Verifies the boundary condition: at 751 messages (just over 75%),
    * the badge should become visible.
    */
-  it('should show badge at 136 messages (boundary)', () => {
-    expect(shouldShowNavigationBadge(136)).toBe(true);
+  it('should show badge at 751 messages (boundary)', () => {
+    expect(shouldShowNavigationBadge(751)).toBe(true);
   });
 
   /**
    * Property: Alert level transitions at correct thresholds
    * 
    * Verifies that alert levels change at the correct boundaries:
-   * - 0-135: ok
-   * - 136-162: attention
-   * - 163-180: danger
-   * - >180: blocked
+   * - 0-750: ok
+   * - 751-900: attention
+   * - 901-1000: danger
+   * - >1000: blocked
    */
   it('should return correct alert level for any message count', () => {
     fc.assert(
       fc.property(
-        fc.integer({ min: 0, max: 300 }),
+        fc.integer({ min: 0, max: 1200 }),
         (messageCount: number) => {
           const level = getAlertLevelFromCount(messageCount);
           
-          if (messageCount <= 135) {
+          if (messageCount <= 750) {
             expect(level).toBe('ok');
-          } else if (messageCount <= 162) {
+          } else if (messageCount <= 900) {
             expect(level).toBe('attention');
-          } else if (messageCount <= 180) {
+          } else if (messageCount <= 1000) {
             expect(level).toBe('danger');
           } else {
             expect(level).toBe('blocked');
@@ -126,7 +126,7 @@ describe('Navigation Badge Threshold Property Tests', () => {
   it('should have non-ok alert level whenever badge is visible', () => {
     fc.assert(
       fc.property(
-        fc.integer({ min: 0, max: 300 }),
+        fc.integer({ min: 0, max: 700 }),
         (messageCount: number) => {
           const shouldShow = shouldShowNavigationBadge(messageCount);
           const level = getAlertLevelFromCount(messageCount);
@@ -151,16 +151,16 @@ describe('Navigation Badge Threshold Property Tests', () => {
    * Requirements 3.1, 3.2, 3.3, 3.4
    */
   it('should have correct alert levels at boundary values', () => {
-    // Boundary: 135 -> ok, 136 -> attention
-    expect(getAlertLevelFromCount(135)).toBe('ok');
-    expect(getAlertLevelFromCount(136)).toBe('attention');
+    // Boundary: 750 -> ok, 751 -> attention
+    expect(getAlertLevelFromCount(750)).toBe('ok');
+    expect(getAlertLevelFromCount(751)).toBe('attention');
     
-    // Boundary: 162 -> attention, 163 -> danger
-    expect(getAlertLevelFromCount(162)).toBe('attention');
-    expect(getAlertLevelFromCount(163)).toBe('danger');
+    // Boundary: 900 -> attention, 901 -> danger
+    expect(getAlertLevelFromCount(900)).toBe('attention');
+    expect(getAlertLevelFromCount(901)).toBe('danger');
     
-    // Boundary: 180 -> danger, 181 -> blocked
-    expect(getAlertLevelFromCount(180)).toBe('danger');
-    expect(getAlertLevelFromCount(181)).toBe('blocked');
+    // Boundary: 1000 -> danger, 1001 -> blocked
+    expect(getAlertLevelFromCount(1000)).toBe('danger');
+    expect(getAlertLevelFromCount(1001)).toBe('blocked');
   });
 });

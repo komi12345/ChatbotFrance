@@ -8,8 +8,8 @@ import { MessagePreview } from "@/components/campaigns/MessagePreview";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LoadingSpinner, ErrorMessage, useToast, SendingProgress, ConfirmDialog } from "@/components/common";
-import { useCampaign, useCampaignStats, useRetryCampaign, useDeleteCampaign, useSendCampaign, useStopCampaign, useForceDeleteCampaign } from "@/hooks/useCampaigns";
-import { ArrowLeft, Calendar, Tag, Trash2, Play, RotateCcw, StopCircle, AlertTriangle } from "lucide-react";
+import { useCampaign, useCampaignStats, useRetryCampaign, useDeleteCampaign, useSendCampaign, useStopCampaign, useForceDeleteCampaign, useRelaunchCampaign } from "@/hooks/useCampaigns";
+import { ArrowLeft, Calendar, Tag, Trash2, Play, RotateCcw, StopCircle, AlertTriangle, RefreshCw } from "lucide-react";
 import type { CampaignStatus } from "@/types/campaign";
 
 /**
@@ -45,13 +45,15 @@ export default function CampaignDetailPage() {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
 
   const { data: campaign, isLoading: campaignLoading, error: campaignError, refetch: refetchCampaign } = useCampaign(campaignId);
-  const { data: stats, isLoading: statsLoading, error: statsError, refetch: refetchStats } = useCampaignStats(campaignId);
+  const { data: stats, isLoading: statsLoading, error: statsError, refetch: refetchStats } = useCampaignStats(campaignId, campaign?.status);
   const retryMutation = useRetryCampaign();
   const deleteMutation = useDeleteCampaign();
   const sendMutation = useSendCampaign();
   const stopMutation = useStopCampaign();
   const forceDeleteMutation = useForceDeleteCampaign();
+  const relaunchMutation = useRelaunchCampaign();
   const [showForceDeleteDialog, setShowForceDeleteDialog] = useState(false);
+  const [showRelaunchDialog, setShowRelaunchDialog] = useState(false);
 
   const handleBack = () => {
     router.push("/campaigns");
@@ -115,6 +117,19 @@ export default function CampaignDetailPage() {
     }
   };
 
+  const handleRelaunch = async () => {
+    try {
+      const result = await relaunchMutation.mutateAsync(campaignId);
+      toast.success(result?.message || `Campagne relancée pour ${result?.total_messages || 0} destinataires`);
+      setShowRelaunchDialog(false);
+      refetchCampaign();
+      refetchStats();
+    } catch (error: any) {
+      toast.error(error?.response?.data?.detail || "Erreur lors de la relance de la campagne");
+      console.error("Erreur lors de la relance:", error);
+    }
+  };
+
   const isLoading = campaignLoading || statsLoading;
   const error = campaignError || statsError;
   
@@ -128,6 +143,8 @@ export default function CampaignDetailPage() {
   const canSend = campaign && campaign.status === "draft";
   // Déterminer si on peut réessayer (failed ou completed avec des échecs)
   const canRetry = campaign && (campaign.status === "failed" || (campaign.status === "completed" && campaign.failed_count > 0));
+  // Déterminer si on peut relancer la campagne entière (completed ou failed)
+  const canRelaunch = campaign && ["completed", "failed"].includes(campaign.status);
 
   return (
     <DashboardLayout title={campaign?.name || "Campagne"}>
@@ -198,6 +215,16 @@ export default function CampaignDetailPage() {
                   {retryMutation.isPending ? "Réessai..." : "Réessayer les échecs"}
                 </Button>
               )}
+              {canRelaunch && (
+                <Button 
+                  onClick={() => setShowRelaunchDialog(true)} 
+                  disabled={relaunchMutation.isPending}
+                  className="bg-blue-600 hover:bg-blue-700"
+                >
+                  <RefreshCw className={`h-4 w-4 mr-2 ${relaunchMutation.isPending ? "animate-spin" : ""}`} />
+                  {relaunchMutation.isPending ? "Relance..." : "Relancer la campagne"}
+                </Button>
+              )}
               {canDelete && (
                 <Button 
                   onClick={() => setShowDeleteDialog(true)} 
@@ -244,6 +271,18 @@ export default function CampaignDetailPage() {
           cancelText="Annuler"
           onConfirm={handleForceDelete}
           variant="danger"
+        />
+        
+        {/* Dialog de confirmation de relance */}
+        <ConfirmDialog
+          open={showRelaunchDialog}
+          onOpenChange={setShowRelaunchDialog}
+          title="Relancer la campagne"
+          description={`Voulez-vous relancer la campagne "${campaign?.name}" ? Tous les anciens messages seront supprimés et de nouveaux messages seront envoyés à tous les contacts des catégories ciblées.`}
+          confirmText="Relancer"
+          cancelText="Annuler"
+          onConfirm={handleRelaunch}
+          variant="info"
         />
 
         {/* Erreur */}

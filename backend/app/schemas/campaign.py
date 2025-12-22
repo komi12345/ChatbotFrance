@@ -48,7 +48,7 @@ class CampaignResponse(CampaignBase):
     Schéma de réponse pour une campagne.
     
     Note: Les compteurs utilisent delivered_count et read_count pour la cohérence
-    avec les webhooks Gupshup qui retournent ces statuts.
+    avec les webhooks Wassenger qui retournent ces statuts.
     
     Exigences: 7.5, 8.5
     """
@@ -59,6 +59,8 @@ class CampaignResponse(CampaignBase):
     delivered_count: int
     read_count: int
     failed_count: int
+    success_count: int = 0  # delivered + read (pour le frontend)
+    interaction_count: int = 0  # Nombre d'interactions/réponses
     created_by: Optional[int] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
@@ -89,7 +91,7 @@ class CampaignStats(BaseModel):
     """
     Schéma pour les statistiques d'une campagne.
     
-    Note: Les formules de calcul des statistiques restent identiques après la migration Gupshup.
+    Note: Les formules de calcul des statistiques restent identiques après la migration Wassenger.
     - success_rate = (delivered_count + read_count) / total * 100
     
     Exigences: 7.5
@@ -102,6 +104,10 @@ class CampaignStats(BaseModel):
     failed_count: int
     pending_count: int
     success_rate: float
+    # Champs additionnels pour le frontend
+    success_count: int = 0  # delivered + read
+    interaction_count: int = 0  # Nombre d'interactions (réponses)
+    messages: List[dict] = []  # Liste des messages avec détails
 
 
 class CampaignRetryResult(BaseModel):
