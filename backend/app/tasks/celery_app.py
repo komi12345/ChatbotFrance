@@ -15,11 +15,35 @@ from app.config import settings
 # Configuration du logger
 logger = logging.getLogger(__name__)
 
+
+def get_redis_url_with_ssl(redis_url: str) -> str:
+    """
+    Ajoute les paramètres SSL requis pour les connexions rediss://.
+    
+    Render et autres services cloud utilisent rediss:// (Redis over SSL)
+    qui nécessite le paramètre ssl_cert_reqs pour fonctionner.
+    
+    Args:
+        redis_url: URL Redis originale
+        
+    Returns:
+        URL Redis avec paramètres SSL si nécessaire
+    """
+    if redis_url.startswith("rediss://") and "ssl_cert_reqs" not in redis_url:
+        # Ajouter le paramètre SSL requis
+        separator = "&" if "?" in redis_url else "?"
+        return f"{redis_url}{separator}ssl_cert_reqs=CERT_NONE"
+    return redis_url
+
+
+# URL Redis avec support SSL pour les services cloud (Render, etc.)
+REDIS_URL_WITH_SSL = get_redis_url_with_ssl(settings.REDIS_URL)
+
 # Création de l'application Celery
 celery_app = Celery(
     "whatsapp_chatbot",
-    broker=settings.REDIS_URL,
-    backend=settings.REDIS_URL,
+    broker=REDIS_URL_WITH_SSL,
+    backend=REDIS_URL_WITH_SSL,
     include=["app.tasks.message_tasks"]
 )
 
@@ -246,7 +270,7 @@ class RateLimiter:
 
 # Instance globale du rate limiter
 rate_limiter = RateLimiter(
-    redis_url=settings.REDIS_URL,
+    redis_url=REDIS_URL_WITH_SSL,
     limit=settings.WHATSAPP_RATE_LIMIT_PER_MINUTE,
     window=60
 )
@@ -256,7 +280,7 @@ rate_limiter = RateLimiter(
 # Réutilise la même connexion Redis que Celery
 # Requirements: 1.1
 from app.services.monitoring_service import MonitoringService
-monitoring_service = MonitoringService(redis_url=settings.REDIS_URL)
+monitoring_service = MonitoringService(redis_url=REDIS_URL_WITH_SSL)
 
 
 def get_celery_app() -> Celery:
