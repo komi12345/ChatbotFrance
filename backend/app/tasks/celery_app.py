@@ -30,9 +30,9 @@ def get_redis_url_with_ssl(redis_url: str) -> str:
         URL Redis avec paramètres SSL si nécessaire
     """
     if redis_url.startswith("rediss://") and "ssl_cert_reqs" not in redis_url:
-        # Ajouter le paramètre SSL requis
+        # Ajouter le paramètre SSL requis (en minuscules pour redis-py)
         separator = "&" if "?" in redis_url else "?"
-        return f"{redis_url}{separator}ssl_cert_reqs=CERT_NONE"
+        return f"{redis_url}{separator}ssl_cert_reqs=none"
     return redis_url
 
 
