@@ -598,8 +598,11 @@ async def process_wassenger_status(
             message = message_response.data[0] if message_response.data else None
         
         if not message:
-            logger.warning(
-                f"Message non trouvé pour statut Wassenger: message_id={wassenger_message_id}"
+            # Ce warning est fréquent pour les messages sortants (message:out:new)
+            # car l'ID WhatsApp natif diffère de l'ID Wassenger qu'on stocke
+            logger.debug(
+                f"Message non trouvé pour statut Wassenger: message_id={wassenger_message_id} "
+                f"(normal pour message:out:new avec ID WhatsApp natif)"
             )
             return
         

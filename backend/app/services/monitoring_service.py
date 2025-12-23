@@ -23,6 +23,26 @@ from app.config import settings
 # Configuration du logger
 logger = logging.getLogger(__name__)
 
+
+def get_redis_url_with_ssl(redis_url: str) -> str:
+    """
+    Ajoute les paramètres SSL requis pour les connexions rediss://.
+    
+    Render et autres services cloud utilisent rediss:// (Redis over SSL)
+    qui nécessite le paramètre ssl_cert_reqs pour fonctionner.
+    
+    Args:
+        redis_url: URL Redis originale
+        
+    Returns:
+        URL Redis avec paramètres SSL si nécessaire
+    """
+    if redis_url.startswith("rediss://") and "ssl_cert_reqs" not in redis_url:
+        # Ajouter le paramètre SSL requis
+        separator = "&" if "?" in redis_url else "?"
+        return f"{redis_url}{separator}ssl_cert_reqs=CERT_NONE"
+    return redis_url
+
 # Constantes
 DAILY_MESSAGE_LIMIT = 1000
 TTL_SECONDS = 48 * 60 * 60  # 48 heures en secondes
@@ -79,7 +99,9 @@ class MonitoringService:
         Args:
             redis_url: URL de connexion Redis (utilise settings.REDIS_URL par défaut)
         """
-        self.redis_url = redis_url or settings.REDIS_URL
+        # Appliquer la transformation SSL pour les connexions rediss://
+        raw_url = redis_url or settings.REDIS_URL
+        self.redis_url = get_redis_url_with_ssl(raw_url)
         self._redis: Optional[redis.Redis] = None
         
         logger.info(
