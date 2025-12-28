@@ -586,6 +586,22 @@ class SupabaseDB:
         for msg in (response.data or []):
             # Récupérer les infos du contact
             contact = self.get_contact_by_id(msg.get("contact_id"))
+            
+            # Construire le nom du contact
+            contact_name = None
+            contact_phone = None
+            if contact:
+                # Construire le nom complet à partir de first_name et last_name
+                name_parts = []
+                if contact.get("first_name"):
+                    name_parts.append(contact["first_name"])
+                if contact.get("last_name"):
+                    name_parts.append(contact["last_name"])
+                contact_name = " ".join(name_parts) if name_parts else None
+                
+                # Utiliser full_number pour le numéro de téléphone
+                contact_phone = contact.get("full_number")
+            
             messages.append({
                 "id": msg["id"],
                 "status": msg["status"],
@@ -594,8 +610,8 @@ class SupabaseDB:
                 "error_message": msg.get("error_message"),
                 "sent_at": msg.get("sent_at"),
                 "contact_id": msg.get("contact_id"),
-                "contact_name": contact.get("name") if contact else None,
-                "contact_phone": contact.get("phone") if contact else None,
+                "contact_name": contact_name,
+                "contact_phone": contact_phone,
             })
         
         return messages
