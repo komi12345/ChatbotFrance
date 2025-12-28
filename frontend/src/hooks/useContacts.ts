@@ -168,6 +168,7 @@ export function useDeleteContact() {
 
 /**
  * Hook pour importer des contacts depuis un fichier CSV
+ * Invalide tous les caches liés après import réussi
  */
 export function useImportContacts() {
   const queryClient = useQueryClient();
@@ -189,8 +190,11 @@ export function useImportContacts() {
       return response.data;
     },
     onSuccess: () => {
-      // Invalider le cache des listes
+      // Invalider tous les caches liés pour mise à jour instantanée
       queryClient.invalidateQueries({ queryKey: contactKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: ["categories"] });
+      queryClient.invalidateQueries({ queryKey: ["stats"] });
+      queryClient.invalidateQueries({ queryKey: [...contactKeys.all, "verification-stats"] });
     },
   });
 }

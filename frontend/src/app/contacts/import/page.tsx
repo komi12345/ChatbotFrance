@@ -22,12 +22,19 @@ export default function ContactImportPage() {
   const handleImport = async (file: File): Promise<ContactImportResult> => {
     try {
       const result = await importMutation.mutateAsync(file);
-      if (result.success_count > 0) {
+      
+      // Afficher un seul message selon le résultat
+      if (result.error_count === 0 && result.success_count > 0) {
+        // Tout est OK
         toast.success(`${result.success_count} contact(s) importé(s) avec succès`);
+      } else if (result.success_count === 0 && result.error_count > 0) {
+        // Tout a échoué
+        toast.error(`Échec de l'import : ${result.error_count} erreur(s)`);
+      } else if (result.success_count > 0 && result.error_count > 0) {
+        // Résultat mixte
+        toast.warning(`${result.success_count} importé(s), ${result.error_count} erreur(s)`);
       }
-      if (result.error_count > 0) {
-        toast.warning(`${result.error_count} contact(s) n'ont pas pu être importés`);
-      }
+      
       return result;
     } catch (error) {
       toast.error("Erreur lors de l'import des contacts");
