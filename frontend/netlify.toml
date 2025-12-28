@@ -1,0 +1,102 @@
+# =============================================================================
+# CONFIGURATION NETLIFY - CHATBOT WHATSAPP FRONTEND
+# =============================================================================
+# Ce fichier configure le déploiement automatique sur Netlify
+# Documentation : https://docs.netlify.com/configure-builds/file-based-configuration/
+# =============================================================================
+
+[build]
+  # Commande de build Next.js
+  command = "npm run build"
+  # Dossier de sortie (géré par le plugin Next.js)
+  publish = ".next"
+
+[build.environment]
+  # Version de Node.js (Next.js 16 nécessite Node 18+)
+  NODE_VERSION = "20"
+  # Désactiver les avertissements de dépendances peer
+  NPM_FLAGS = "--legacy-peer-deps"
+
+# =============================================================================
+# PLUGIN NEXT.JS (ESSENTIEL)
+# =============================================================================
+# Ce plugin gère automatiquement :
+# - Le routage Next.js (App Router)
+# - Les fonctions serverless
+# - L'optimisation des images
+# - Le SSR et SSG
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
+
+# =============================================================================
+# HEADERS DE SÉCURITÉ
+# =============================================================================
+[[headers]]
+  for = "/*"
+  [headers.values]
+    # Protection contre le clickjacking
+    X-Frame-Options = "DENY"
+    # Protection XSS
+    X-XSS-Protection = "1; mode=block"
+    # Empêcher le sniffing MIME
+    X-Content-Type-Options = "nosniff"
+    # Politique de référent
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    # Permissions Policy (remplace Feature-Policy)
+    Permissions-Policy = "camera=(), microphone=(), geolocation=()"
+
+# Headers pour les assets statiques (cache long)
+[[headers]]
+  for = "/_next/static/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# Headers pour les images optimisées
+[[headers]]
+  for = "/_next/image/*"
+  [headers.values]
+    Cache-Control = "public, max-age=86400, stale-while-revalidate=604800"
+
+# =============================================================================
+# REDIRECTIONS
+# =============================================================================
+# Redirection de la racine vers le dashboard (si connecté) ou login
+# Note : Le plugin Next.js gère automatiquement le routage
+
+# Redirection HTTP vers HTTPS (automatique sur Netlify, mais explicite)
+[[redirects]]
+  from = "http://votre-site.netlify.app/*"
+  to = "https://votre-site.netlify.app/:splat"
+  status = 301
+  force = true
+
+# =============================================================================
+# CONTEXTES DE DÉPLOIEMENT
+# =============================================================================
+# Configuration spécifique pour la production
+[context.production]
+  command = "npm run build"
+  [context.production.environment]
+    NODE_ENV = "production"
+
+# Configuration pour les branches de preview
+[context.deploy-preview]
+  command = "npm run build"
+  [context.deploy-preview.environment]
+    NODE_ENV = "production"
+
+# Configuration pour les branches de développement
+[context.branch-deploy]
+  command = "npm run build"
+  [context.branch-deploy.environment]
+    NODE_ENV = "production"
+
+# =============================================================================
+# FONCTIONS SERVERLESS (si nécessaire)
+# =============================================================================
+[functions]
+  # Dossier des fonctions (géré automatiquement par le plugin Next.js)
+  directory = ".netlify/functions"
+  # Timeout des fonctions (max 10s sur plan gratuit)
+  [functions."*"]
+    timeout = 10
