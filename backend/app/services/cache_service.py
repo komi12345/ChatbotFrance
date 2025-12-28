@@ -16,10 +16,24 @@ Requirements: 3.1, 3.2, 3.4, 3.5, 3.6
 """
 import json
 import logging
-from datetime import timedelta
+from datetime import datetime, date, timedelta
 from typing import Any, Callable, Optional, List
 
 import redis
+
+
+class DateTimeEncoder(json.JSONEncoder):
+    """
+    Encodeur JSON personnalisé pour gérer les objets datetime.
+    
+    Convertit les objets datetime et date en chaînes ISO 8601.
+    """
+    def default(self, obj):
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        if isinstance(obj, date):
+            return obj.isoformat()
+        return super().default(obj)
 
 from app.config import settings
 
@@ -190,7 +204,8 @@ class CacheService:
         
         try:
             ttl = ttl or self.DEFAULT_TTL
-            serialized = json.dumps(value)
+            # Utiliser DateTimeEncoder pour gérer les objets datetime
+            serialized = json.dumps(value, cls=DateTimeEncoder)
             self.redis.setex(cache_key, int(ttl.total_seconds()), serialized)
             logger.debug(f"Cache SET: {cache_key} (TTL: {ttl.total_seconds()}s)")
             return True
