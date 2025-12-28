@@ -148,6 +148,13 @@ celery_app.conf.update(
             "schedule": timedelta(minutes=2),
             "options": {"queue": "default"},
         },
+        # Tâche de vérification des messages sans interaction après 24h
+        # Requirements: 7.1 - Exécutée toutes les heures
+        "check-expired-interactions-hourly": {
+            "task": "app.tasks.celery_app.check_expired_interactions",
+            "schedule": timedelta(hours=1),
+            "options": {"queue": "default"},
+        },
     },
     
     # Configuration pour le scheduler crontab
@@ -397,6 +404,7 @@ def recover_interrupted_campaigns():
     ou une interruption de connexion.
     
     Requirements: Production robustness - automatic recovery
+    Requirements 7.5: Inclure "no_interaction" dans le calcul du statut "completed"
     """
     try:
         from app.supabase_client import get_supabase_client
@@ -424,9 +432,35 @@ def recover_interrupted_campaigns():
             
             if pending_count == 0:
                 # Pas de messages pending, la campagne devrait être terminée
+                # Vérifier s'il y a des messages "no_interaction" ou "sent/delivered/read"
+                # Requirements 7.5: Inclure "no_interaction" dans le calcul
+                sent_response = client.table("messages").select("id", count="exact").eq(
+                    "campaign_id", campaign_id
+                ).in_("status", ["sent", "delivered", "read"]).execute()
+                sent_count = sent_response.count or 0
+                
+                no_interaction_response = client.table("messages").select("id", count="exact").eq(
+                    "campaign_id", campaign_id
+                ).eq("status", "no_interaction").execute()
+                no_interaction_count = no_interaction_response.count or 0
+                
+                failed_response = client.table("messages").select("id", count="exact").eq(
+                    "campaign_id", campaign_id
+                ).eq("status", "failed").execute()
+                failed_count = failed_response.count or 0
+                
+                # Déterminer le statut final
+                if failed_count > 0 and sent_count == 0 and no_interaction_count == 0:
+                    new_status = "failed"
+                else:
+                    new_status = "completed"
+                
                 # Mettre à jour le statut
-                client.table("campaigns").update({"status": "completed"}).eq("id", campaign_id).execute()
-                logger.info(f"Campagne {campaign_id} marquée comme terminée (aucun message pending)")
+                client.table("campaigns").update({"status": new_status}).eq("id", campaign_id).execute()
+                logger.info(
+                    f"Campagne {campaign_id} marquée comme {new_status} "
+                    f"(sent={sent_count}, no_interaction={no_interaction_count}, failed={failed_count})"
+                )
                 continue
             
             # Vérifier si des messages ont été envoyés récemment (dernières 10 minutes)
@@ -569,3 +603,163 @@ def system_health_check():
 
 # Import datetime pour les nouvelles tâches
 from datetime import datetime, timezone
+
+
+@celery_app.task(name="app.tasks.celery_app.check_expired_interactions")
+def check_expired_interactions():
+    """
+    Tâche périodique pour marquer les contacts sans interaction après 24h.
+    
+    Exécutée toutes les heures pour:
+    1. Trouver les Message 1 envoyés il y a plus de 24h
+    2. Vérifier si le contact a interagi
+    3. Si pas d'interaction -> marquer comme "no_interaction"
+    4. Mettre à jour les statistiques de la campagne (failed_count)
+    
+    Requirements: 7.1, 7.2, 7.3, 7.4, 7.6
+    """
+    try:
+        from app.supabase_client import get_supabase_client
+        
+        logger.info("Démarrage de la vérification des messages sans interaction (24h)")
+        
+        client = get_supabase_client()
+        
+        # Calculer le timestamp de coupure (24h en arrière)
+        cutoff_time = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        
+        # Trouver les messages Message 1 envoyés il y a plus de 24h
+        # qui sont en statut "sent", "delivered" ou "read"
+        # et qui ne sont pas déjà marqués comme "no_interaction" ou "failed"
+        messages_response = client.table("messages").select(
+            "id, campaign_id, contact_id, sent_at, status"
+        ).eq(
+            "message_type", "message_1"
+        ).in_(
+            "status", ["sent", "delivered", "read"]
+        ).lt(
+            "sent_at", cutoff_time
+        ).execute()
+        
+        messages_to_check = messages_response.data or []
+        
+        logger.info(f"Trouvé {len(messages_to_check)} messages Message 1 de plus de 24h à vérifier")
+        
+        marked_count = 0
+        campaigns_updated = {}  # Pour tracker les campagnes à mettre à jour
+        
+        for message in messages_to_check:
+            message_id = message["id"]
+            campaign_id = message["campaign_id"]
+            contact_id = message["contact_id"]
+            
+            # Vérifier si un Message 2 a déjà été envoyé pour ce contact/campagne
+            # Si oui, le contact a interagi et le Message 2 a été envoyé
+            message_2_response = client.table("messages").select(
+                "id", count="exact"
+            ).eq(
+                "campaign_id", campaign_id
+            ).eq(
+                "contact_id", contact_id
+            ).eq(
+                "message_type", "message_2"
+            ).execute()
+            
+            message_2_count = message_2_response.count or 0
+            
+            if message_2_count > 0:
+                # Message 2 déjà envoyé = interaction a eu lieu, skip
+                logger.debug(
+                    f"Message {message_id}: Message 2 déjà envoyé pour contact {contact_id}, skip"
+                )
+                continue
+            
+            # Vérifier s'il y a eu une interaction (reply ou reaction)
+            interaction_response = client.table("interactions").select(
+                "id", count="exact"
+            ).eq(
+                "campaign_id", campaign_id
+            ).eq(
+                "contact_id", contact_id
+            ).in_(
+                "interaction_type", ["reply", "reaction"]
+            ).execute()
+            
+            interaction_count = interaction_response.count or 0
+            
+            if interaction_count > 0:
+                # Interaction trouvée mais Message 2 pas encore envoyé
+                # Cela peut arriver si le Message 2 est en attente
+                logger.debug(
+                    f"Message {message_id}: Interaction trouvée pour contact {contact_id}, skip"
+                )
+                continue
+            
+            # Pas d'interaction après 24h -> marquer comme "no_interaction"
+            client.table("messages").update({
+                "status": "no_interaction",
+                "error_message": "Pas d'interaction dans les 24h"
+            }).eq("id", message_id).execute()
+            
+            # Récupérer les infos du contact pour le log
+            contact_response = client.table("contacts").select(
+                "first_name, last_name, full_number"
+            ).eq("id", contact_id).limit(1).execute()
+            
+            contact_info = contact_response.data[0] if contact_response.data else {}
+            contact_name = f"{contact_info.get('first_name', '')} {contact_info.get('last_name', '')}".strip()
+            contact_phone = contact_info.get("full_number", "N/A")
+            
+            logger.info(
+                f"Message {message_id} marqué 'no_interaction': "
+                f"Contact {contact_id} ({contact_name}, {contact_phone}), "
+                f"Campagne {campaign_id}"
+            )
+            
+            marked_count += 1
+            
+            # Tracker la campagne pour mise à jour du failed_count
+            if campaign_id not in campaigns_updated:
+                campaigns_updated[campaign_id] = 0
+            campaigns_updated[campaign_id] += 1
+        
+        # Mettre à jour les compteurs failed_count des campagnes
+        for campaign_id, count in campaigns_updated.items():
+            try:
+                # Récupérer le failed_count actuel
+                campaign_response = client.table("campaigns").select(
+                    "failed_count"
+                ).eq("id", campaign_id).limit(1).execute()
+                
+                if campaign_response.data:
+                    current_failed = campaign_response.data[0].get("failed_count") or 0
+                    new_failed = current_failed + count
+                    
+                    client.table("campaigns").update({
+                        "failed_count": new_failed
+                    }).eq("id", campaign_id).execute()
+                    
+                    logger.info(
+                        f"Campagne {campaign_id}: failed_count mis à jour "
+                        f"({current_failed} -> {new_failed}, +{count} no_interaction)"
+                    )
+            except Exception as e:
+                logger.error(f"Erreur mise à jour failed_count campagne {campaign_id}: {e}")
+        
+        logger.info(
+            f"Vérification 24h terminée: {marked_count} message(s) marqué(s) 'no_interaction' "
+            f"sur {len(messages_to_check)} vérifié(s), "
+            f"{len(campaigns_updated)} campagne(s) mise(s) à jour"
+        )
+        
+        return {
+            "status": "success",
+            "messages_checked": len(messages_to_check),
+            "messages_marked": marked_count,
+            "campaigns_updated": len(campaigns_updated),
+            "details": campaigns_updated
+        }
+        
+    except Exception as e:
+        logger.error(f"Erreur lors de la vérification des interactions 24h: {e}")
+        return {"status": "error", "message": str(e)}

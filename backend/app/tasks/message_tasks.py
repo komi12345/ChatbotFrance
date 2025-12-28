@@ -1246,7 +1246,11 @@ def update_campaign_status(self, campaign_id: int) -> dict:
     Returns:
         Dictionnaire avec le nouveau statut
     
-    Exigences: 6.6
+    Exigences: 6.6, 7.5
+    
+    Requirements 7.5: WHEN tous les messages d'une campagne sont soit 
+    "delivered/read" soit "no_interaction", THE System SHALL marquer 
+    la campagne comme "completed"
     """
     client = get_supabase_client()
     
@@ -1267,9 +1271,16 @@ def update_campaign_status(self, campaign_id: int) -> dict:
         failed_response = client.table("messages").select("id", count="exact").eq("campaign_id", campaign_id).eq("status", "failed").execute()
         failed_count = failed_response.count or 0
         
+        # Compter les messages "no_interaction" (24h sans réponse)
+        # Requirements 7.5: Ces messages comptent comme "terminés" pour le calcul du statut
+        no_interaction_response = client.table("messages").select("id", count="exact").eq("campaign_id", campaign_id).eq("status", "no_interaction").execute()
+        no_interaction_count = no_interaction_response.count or 0
+        
         # Déterminer le statut de la campagne
+        # Requirements 7.5: La campagne est "completed" quand tous les messages sont
+        # soit "sent/delivered/read" soit "no_interaction" soit "failed"
         if pending_count == 0:
-            if failed_count > 0 and sent_count == 0:
+            if failed_count > 0 and sent_count == 0 and no_interaction_count == 0:
                 new_status = "failed"
             else:
                 new_status = "completed"
@@ -1277,16 +1288,19 @@ def update_campaign_status(self, campaign_id: int) -> dict:
             new_status = "sending"
         
         # Mettre à jour la campagne - Exigence 6.6
+        # Note: failed_count inclut maintenant les no_interaction pour les stats
+        total_failed = failed_count + no_interaction_count
+        
         client.table("campaigns").update({
             "status": new_status,
             "sent_count": sent_count,
             "success_count": sent_count,
-            "failed_count": failed_count
+            "failed_count": total_failed
         }).eq("id", campaign_id).execute()
         
         logger.info(
             f"Campagne {campaign_id} mise à jour: status={new_status}, "
-            f"sent={sent_count}, failed={failed_count}, pending={pending_count}"
+            f"sent={sent_count}, failed={failed_count}, no_interaction={no_interaction_count}, pending={pending_count}"
         )
         
         return {
@@ -1295,6 +1309,7 @@ def update_campaign_status(self, campaign_id: int) -> dict:
             "status": new_status,
             "sent_count": sent_count,
             "failed_count": failed_count,
+            "no_interaction_count": no_interaction_count,
             "pending_count": pending_count
         }
         

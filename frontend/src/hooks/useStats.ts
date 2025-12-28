@@ -52,6 +52,7 @@ export const statsKeys = {
 
 /**
  * Hook pour récupérer les statistiques globales du dashboard
+ * Requirements: 2.2 - staleTime de 5 minutes pour les stats
  */
 export function useDashboardStats() {
   return useQuery({
@@ -85,12 +86,14 @@ export function useDashboardStats() {
         estimated_cost: estimatedCost,
       };
     },
-    staleTime: 30000, // 30 secondes
+    staleTime: 5 * 60 * 1000, // 5 minutes - Requirements 2.2
+    gcTime: 15 * 60 * 1000, // 15 minutes
   });
 }
 
 /**
  * Hook pour récupérer les statistiques globales des messages
+ * Requirements: 2.2 - staleTime de 5 minutes pour les stats
  */
 export function useMessageStats() {
   return useQuery({
@@ -99,12 +102,14 @@ export function useMessageStats() {
       const response = await api.get<MessageStats>("/messages/stats");
       return response.data;
     },
-    staleTime: 30000,
+    staleTime: 5 * 60 * 1000, // 5 minutes - Requirements 2.2
+    gcTime: 15 * 60 * 1000, // 15 minutes
   });
 }
 
 /**
  * Hook pour récupérer l'évolution des envois sur les derniers jours
+ * Requirements: 2.2 - staleTime de 5 minutes pour les stats
  */
 export function useDailyStats(days: number = 7) {
   return useQuery({
@@ -148,12 +153,14 @@ export function useDailyStats(days: number = 7) {
 
       return Object.values(dailyData);
     },
-    staleTime: 60000, // 1 minute
+    staleTime: 5 * 60 * 1000, // 5 minutes - Requirements 2.2
+    gcTime: 15 * 60 * 1000, // 15 minutes
   });
 }
 
 /**
  * Hook pour récupérer la répartition des statuts
+ * Requirements: 2.2 - staleTime de 5 minutes pour les stats
  */
 export function useStatusDistribution() {
   return useQuery({
@@ -192,12 +199,14 @@ export function useStatusDistribution() {
         },
       ].filter(s => s.count > 0);
     },
-    staleTime: 30000,
+    staleTime: 5 * 60 * 1000, // 5 minutes - Requirements 2.2
+    gcTime: 15 * 60 * 1000, // 15 minutes
   });
 }
 
 /**
  * Hook pour récupérer les messages récents
+ * Requirements: 2.2 - staleTime de 5 minutes pour les stats
  */
 export function useRecentMessages(limit: number = 10) {
   return useQuery({
@@ -226,7 +235,8 @@ export function useRecentMessages(limit: number = 10) {
         message_type: msg.message_type,
       }));
     },
-    staleTime: 30000,
+    staleTime: 5 * 60 * 1000, // 5 minutes - Requirements 2.2
+    gcTime: 15 * 60 * 1000, // 15 minutes
   });
 }
 

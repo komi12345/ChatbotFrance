@@ -22,6 +22,7 @@ export const categoryKeys = {
 
 /**
  * Hook pour récupérer la liste des catégories avec pagination
+ * Requirements: 2.3 - staleTime de 2 minutes pour les listes
  */
 export function useCategories(params: { page?: number; search?: string } = {}) {
   const { page = 1, search = "" } = params;
@@ -41,11 +42,14 @@ export function useCategories(params: { page?: number; search?: string } = {}) {
       );
       return response.data;
     },
+    staleTime: 2 * 60 * 1000, // 2 minutes - Requirements 2.3
+    gcTime: 10 * 60 * 1000, // 10 minutes
   });
 }
 
 /**
  * Hook pour récupérer les détails d'une catégorie
+ * Requirements: 2.3 - staleTime de 2 minutes pour les listes
  */
 export function useCategory(id: number) {
   return useQuery({
@@ -55,12 +59,15 @@ export function useCategory(id: number) {
       return response.data;
     },
     enabled: !!id,
+    staleTime: 2 * 60 * 1000, // 2 minutes - Requirements 2.3
+    gcTime: 10 * 60 * 1000, // 10 minutes
   });
 }
 
 
 /**
- * Hook pour créer une catégorie
+ * Hook pour créer une catégorie avec mise à jour optimiste
+ * Requirements: 2.1 - Mise à jour optimiste des statistiques
  */
 export function useCreateCategory() {
   const queryClient = useQueryClient();
@@ -70,8 +77,33 @@ export function useCreateCategory() {
       const response = await api.post<Category>("/categories", data);
       return response.data;
     },
-    onSuccess: () => {
-      // Invalider tous les caches liés
+    onMutate: async () => {
+      // Annuler les requêtes en cours pour éviter les conflits
+      await queryClient.cancelQueries({ queryKey: ["stats"] });
+
+      // Snapshot des données actuelles pour rollback
+      const previousDashboardStats = queryClient.getQueryData(["stats", "dashboard"]);
+
+      // Mise à jour optimiste du compteur de catégories
+      queryClient.setQueryData(["stats", "dashboard"], (old: { total_categories?: number } | undefined) => {
+        if (!old) return old;
+        return {
+          ...old,
+          total_categories: (old.total_categories || 0) + 1,
+        };
+      });
+
+      // Retourner le contexte pour rollback
+      return { previousDashboardStats };
+    },
+    onError: (_err, _newCategory, context) => {
+      // Rollback en cas d'erreur
+      if (context?.previousDashboardStats) {
+        queryClient.setQueryData(["stats", "dashboard"], context.previousDashboardStats);
+      }
+    },
+    onSettled: () => {
+      // Invalider pour synchroniser avec le serveur
       queryClient.invalidateQueries({ queryKey: categoryKeys.lists() });
       queryClient.invalidateQueries({ queryKey: ["stats"] });
     },

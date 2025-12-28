@@ -23,6 +23,7 @@ export const contactKeys = {
 
 /**
  * Hook pour récupérer la liste des contacts avec pagination et filtres
+ * Requirements: 2.3 - staleTime de 2 minutes pour les listes
  */
 export function useContacts(params: ContactFilters = {}) {
   const { page = 1, size = 50, search = "", category_id, whatsapp_status } = params;
@@ -49,11 +50,14 @@ export function useContacts(params: ContactFilters = {}) {
       );
       return response.data;
     },
+    staleTime: 2 * 60 * 1000, // 2 minutes - Requirements 2.3
+    gcTime: 10 * 60 * 1000, // 10 minutes
   });
 }
 
 /**
  * Hook pour récupérer les détails d'un contact
+ * Requirements: 2.3 - staleTime de 2 minutes pour les listes
  */
 export function useContact(id: number) {
   return useQuery({
@@ -63,12 +67,15 @@ export function useContact(id: number) {
       return response.data;
     },
     enabled: !!id,
+    staleTime: 2 * 60 * 1000, // 2 minutes - Requirements 2.3
+    gcTime: 10 * 60 * 1000, // 10 minutes
   });
 }
 
 
 /**
- * Hook pour créer un contact
+ * Hook pour créer un contact avec mise à jour optimiste
+ * Requirements: 2.1 - Mise à jour optimiste des statistiques
  */
 export function useCreateContact() {
   const queryClient = useQueryClient();
@@ -78,8 +85,33 @@ export function useCreateContact() {
       const response = await api.post<Contact>("/contacts", data);
       return response.data;
     },
-    onSuccess: () => {
-      // Invalider tous les caches liés
+    onMutate: async () => {
+      // Annuler les requêtes en cours pour éviter les conflits
+      await queryClient.cancelQueries({ queryKey: ["stats"] });
+
+      // Snapshot des données actuelles pour rollback
+      const previousDashboardStats = queryClient.getQueryData(["stats", "dashboard"]);
+
+      // Mise à jour optimiste du compteur de contacts
+      queryClient.setQueryData(["stats", "dashboard"], (old: { total_contacts?: number } | undefined) => {
+        if (!old) return old;
+        return {
+          ...old,
+          total_contacts: (old.total_contacts || 0) + 1,
+        };
+      });
+
+      // Retourner le contexte pour rollback
+      return { previousDashboardStats };
+    },
+    onError: (_err, _newContact, context) => {
+      // Rollback en cas d'erreur
+      if (context?.previousDashboardStats) {
+        queryClient.setQueryData(["stats", "dashboard"], context.previousDashboardStats);
+      }
+    },
+    onSettled: () => {
+      // Invalider pour synchroniser avec le serveur
       queryClient.invalidateQueries({ queryKey: contactKeys.lists() });
       queryClient.invalidateQueries({ queryKey: ["categories"] });
       queryClient.invalidateQueries({ queryKey: ["stats"] });
@@ -219,7 +251,7 @@ export interface WhatsAppVerificationStats {
 
 /**
  * Hook pour récupérer les statistiques de vérification WhatsApp
- * Requirements: 5.1
+ * Requirements: 5.1, 2.3 - staleTime de 2 minutes
  */
 export function useWhatsAppVerificationStats() {
   return useQuery({
@@ -228,7 +260,8 @@ export function useWhatsAppVerificationStats() {
       const response = await api.get<WhatsAppVerificationStats>("/verify/stats");
       return response.data;
     },
-    staleTime: 30000, // 30 seconds
+    staleTime: 2 * 60 * 1000, // 2 minutes - Requirements 2.3
+    gcTime: 10 * 60 * 1000, // 10 minutes
   });
 }
 

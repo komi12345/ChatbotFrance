@@ -17,6 +17,7 @@ from app.routers.messages import router as messages_router
 from app.routers.users import router as users_router
 from app.routers.verify import router as verify_router
 from app.routers.monitoring import router as monitoring_router
+from app.routers.cache import router as cache_router
 
 # Configuration du logging
 logging.basicConfig(
@@ -107,6 +108,7 @@ app.include_router(messages_router, prefix="/api")
 app.include_router(users_router, prefix="/api")
 app.include_router(verify_router, prefix="/api")
 app.include_router(monitoring_router, prefix="/api")
+app.include_router(cache_router, prefix="/api")
 
 
 # Route racine

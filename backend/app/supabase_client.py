@@ -243,6 +243,35 @@ class SupabaseDB:
         response = self.client.table("category_contacts").select("id", count="exact").eq("category_id", category_id).execute()
         return response.count or 0
     
+    def get_categories_contact_counts(self, category_ids: List[int]) -> Dict[int, int]:
+        """
+        Compte le nombre de contacts pour plusieurs catégories en une seule requête.
+        
+        Optimisation: Utilise une seule requête avec GROUP BY au lieu de N requêtes.
+        
+        Args:
+            category_ids: Liste des IDs de catégories
+        
+        Returns:
+            Dict mapping category_id -> contact_count
+        
+        Requirements: 5.2 - Utiliser une seule requête avec COUNT au lieu de boucle
+        """
+        if not category_ids:
+            return {}
+        
+        # Récupérer toutes les associations category_contacts pour les catégories demandées
+        response = self.client.table("category_contacts").select("category_id").in_("category_id", category_ids).execute()
+        
+        # Compter manuellement par catégorie (Supabase REST API ne supporte pas GROUP BY)
+        counts: Dict[int, int] = {cat_id: 0 for cat_id in category_ids}
+        for row in (response.data or []):
+            cat_id = row.get("category_id")
+            if cat_id in counts:
+                counts[cat_id] += 1
+        
+        return counts
+    
     # ==================== CONTACTS ====================
     
     def get_contact_by_id(self, contact_id: int) -> Optional[Dict]:

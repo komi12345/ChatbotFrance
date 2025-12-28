@@ -1,6 +1,8 @@
 """
 Routes CRUD pour les contacts - Gestion des contacts WhatsApp
 Utilise le client Supabase pour les opérations de base de données
+
+Requirements: 1.3, 4.1, 4.2 - Cache invalidation après mutations
 """
 import csv
 import io
@@ -19,6 +21,7 @@ from app.schemas.contact import (
     ContactImportResult,
 )
 from app.services.auth_service import get_current_user
+from app.services.cache_service import invalidate_cache_on_contact_change
 from app.utils.validators import (
     validate_full_phone_number,
     clean_phone_number,
@@ -168,6 +171,11 @@ async def create_contact(
     
     logger.info(f"Contact créé: {contact['full_number']} (ID: {contact['id']}) par utilisateur {current_user['id']}")
     
+    # Invalider le cache des stats et catégories associées
+    # Requirements: 1.3, 4.1 - Invalidation après création de contact
+    category_ids_list = [cat["id"] for cat in categories] if categories else None
+    invalidate_cache_on_contact_change(category_ids_list)
+    
     # Queue WhatsApp verification task asynchronously
     # Requirements: 1.1 - Automatically trigger verification on contact creation
     # Requirements: 1.4 - Do not block contact creation on verification result
@@ -296,6 +304,11 @@ async def update_contact(
     
     logger.info(f"Contact mis à jour: {contact['full_number']} (ID: {contact['id']})")
     
+    # Invalider le cache des stats et catégories associées
+    # Requirements: 1.3, 4.1 - Invalidation après modification de contact
+    category_ids_list = [cat["id"] for cat in categories] if categories else None
+    invalidate_cache_on_contact_change(category_ids_list)
+    
     return contact_to_response(contact, categories)
 
 
@@ -308,6 +321,7 @@ async def delete_contact(
     """
     Supprime un contact et toutes ses associations.
     Requirements: 1.1, 2.1 - All users can delete any contact
+    Requirements: 1.3, 4.2 - Invalidation après suppression de contact
     """
     contact = db.get_contact_by_id(contact_id)
     
@@ -317,10 +331,18 @@ async def delete_contact(
             detail="Contact non trouvé"
         )
     
+    # Récupérer les catégories AVANT suppression pour invalidation du cache
+    categories = db.get_contact_categories(contact_id)
+    category_ids_list = [cat["id"] for cat in categories] if categories else None
+    
     contact_number = contact["full_number"]
     db.delete_contact(contact_id)
     
     logger.info(f"Contact supprimé: {contact_number} (ID: {contact_id}) par utilisateur {current_user['id']}")
+    
+    # Invalider le cache des stats et catégories associées
+    # Requirements: 1.3, 4.2 - Invalidation après suppression de contact
+    invalidate_cache_on_contact_change(category_ids_list)
     
     return None
 
@@ -441,6 +463,13 @@ async def import_contacts_csv(
         f"Import CSV terminé par utilisateur {current_user['id']}: "
         f"{success} succès, {failed} échecs sur {total} lignes"
     )
+    
+    # Invalider le cache si des contacts ont été créés
+    # Requirements: 1.3, 4.1 - Invalidation après création de contacts
+    if success > 0:
+        # Invalider les stats et la catégorie associée si spécifiée
+        category_ids_list = [category_id] if category_id else None
+        invalidate_cache_on_contact_change(category_ids_list)
     
     return ContactImportResult(
         total=total,

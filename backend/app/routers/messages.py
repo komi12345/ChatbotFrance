@@ -1,6 +1,11 @@
 """
 Routes pour les messages - Récupération et statistiques des messages
 Utilise le client Supabase pour les opérations de base de données
+
+Performance Optimization:
+- Endpoint /stats utilise le cache Redis pour améliorer les temps de réponse
+- Fallback automatique sur la DB si le cache est indisponible
+- Requirements: 1.1, 1.5, 3.2, 3.4
 """
 import logging
 from typing import List, Optional, Dict
@@ -16,6 +21,7 @@ from app.schemas.message import (
     MessageCampaignInfo,
 )
 from app.services.auth_service import get_current_user
+from app.services.cache_service import CacheService, get_cache_service
 from app.utils.constants import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 
 logger = logging.getLogger(__name__)
@@ -136,12 +142,53 @@ async def list_messages(
 @router.get("/stats", response_model=MessageStats)
 async def get_global_stats(
     db: SupabaseDB = Depends(get_supabase_db),
+    cache: CacheService = Depends(get_cache_service),
     current_user: Dict = Depends(get_current_user)
 ) -> MessageStats:
     """
     Récupère les statistiques globales de tous les messages du système.
     Agrège les stats de tous les messages sans filtrage par utilisateur.
-    Requirements: 5.2 - Message statistics aggregate all data
+    
+    Performance: Utilise le cache Redis avec TTL de 60s.
+    Fallback automatique sur la DB si le cache est indisponible.
+    
+    Requirements: 
+    - 1.1: Cache les résultats avec TTL de 60 secondes
+    - 1.5: Retourne les données en moins de 200ms avec cache
+    - 3.2: Stratégie cache-aside (lecture cache, fallback DB)
+    - 3.4: Mode dégradé si cache indisponible
+    - 5.2: Message statistics aggregate all data
+    """
+    # Clé de cache pour les stats globales
+    cache_key = "messages_global"
+    
+    # Essayer de récupérer depuis le cache d'abord
+    cached_stats = cache.get("stats", cache_key)
+    if cached_stats is not None:
+        logger.debug("Stats récupérées depuis le cache")
+        return MessageStats(**cached_stats)
+    
+    # Fallback sur la DB - calcul des statistiques
+    logger.debug("Cache miss - calcul des stats depuis la DB")
+    stats = await _compute_message_stats_from_db()
+    
+    # Mettre en cache pour les prochaines requêtes (TTL 60s)
+    cache.set("stats", cache_key, stats.model_dump(), CacheService.STATS_TTL)
+    
+    return stats
+
+
+async def _compute_message_stats_from_db() -> MessageStats:
+    """
+    Calcule les statistiques des messages depuis la base de données.
+    
+    Cette fonction est appelée en cas de cache miss.
+    Elle effectue les requêtes SQL nécessaires pour agréger les stats.
+    
+    Returns:
+        MessageStats: Statistiques calculées depuis la DB
+    
+    Requirements: 5.1 - Agrégation en requêtes optimisées
     """
     client = get_supabase_client()
     
@@ -181,7 +228,7 @@ async def get_global_stats(
         delivery_rate = (delivered_count + read_count) / total_messages * 100
         read_rate = read_count / total_messages * 100
     
-    logger.info(f"Stats globales: total={total_messages}, sent={sent_count}, delivered={delivered_count}, read={read_count}, failed={failed_count}, pending={pending_count}")
+    logger.info(f"Stats globales calculées: total={total_messages}, sent={sent_count}, delivered={delivered_count}, read={read_count}, failed={failed_count}, pending={pending_count}")
     
     return MessageStats(
         total_messages=total_messages,
