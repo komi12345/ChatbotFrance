@@ -115,6 +115,8 @@ export function useCreateContact() {
       queryClient.invalidateQueries({ queryKey: contactKeys.lists() });
       queryClient.invalidateQueries({ queryKey: ["categories"] });
       queryClient.invalidateQueries({ queryKey: ["stats"] });
+      // Invalider les stats de vérification WhatsApp
+      queryClient.invalidateQueries({ queryKey: [...contactKeys.all, "verification-stats"] });
     },
   });
 }
@@ -136,6 +138,8 @@ export function useUpdateContact() {
       queryClient.invalidateQueries({ queryKey: contactKeys.detail(variables.id) });
       queryClient.invalidateQueries({ queryKey: ["categories"] });
       queryClient.invalidateQueries({ queryKey: ["stats"] });
+      // Invalider les stats de vérification WhatsApp
+      queryClient.invalidateQueries({ queryKey: [...contactKeys.all, "verification-stats"] });
     },
   });
 }
@@ -156,6 +160,8 @@ export function useDeleteContact() {
       queryClient.invalidateQueries({ queryKey: contactKeys.lists() });
       queryClient.invalidateQueries({ queryKey: ["categories"] });
       queryClient.invalidateQueries({ queryKey: ["stats"] });
+      // Invalider les stats de vérification WhatsApp
+      queryClient.invalidateQueries({ queryKey: [...contactKeys.all, "verification-stats"] });
     },
   });
 }

@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { CampaignForm } from "@/components/campaigns/CampaignForm";
@@ -18,12 +19,17 @@ export default function NewCampaignPage() {
   const router = useRouter();
   const toast = useToast();
   
-  // Récupérer toutes les catégories
+  // Récupérer toutes les catégories avec refetch forcé pour avoir les contact_count à jour
   const { data: categoriesData, isLoading: categoriesLoading, error: categoriesError, refetch } = useCategories({
     page: 1,
   });
   
   const createMutation = useCreateCampaign();
+
+  // Forcer le refetch des catégories au montage pour avoir les contact_count à jour
+  useEffect(() => {
+    refetch();
+  }, [refetch]);
 
   const handleSubmit = async (data: CampaignCreate) => {
     try {
