@@ -62,16 +62,18 @@ export function ContactImport({
   const handleImport = async () => {
     if (!selectedFile) return;
 
+    setError(null);
+    
     try {
-      setError(null);
       const importResult = await onImport(selectedFile);
+      // Si on arrive ici, l'import a réussi (même si tous sont des doublons)
       setResult(importResult);
-      // Ne pas afficher d'erreur si le résultat est valide (même si tous sont des doublons)
     } catch (err) {
-      // Afficher l'erreur seulement si c'est une vraie erreur (pas un résultat valide)
-      const errorMessage = err instanceof Error ? err.message : "Une erreur est survenue lors de l'import";
-      setError(errorMessage);
+      // L'erreur est déjà gérée par le parent (toast), 
+      // on affiche juste un message dans le composant
       console.error("Import error:", err);
+      // Ne pas afficher d'erreur si c'est une erreur de validation côté serveur
+      // car le toast a déjà été affiché
     }
   };
 

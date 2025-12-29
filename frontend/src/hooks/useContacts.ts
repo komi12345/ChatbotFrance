@@ -174,7 +174,7 @@ export function useImportContacts() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (file: File) => {
+    mutationFn: async (file: File): Promise<ContactImportResult> => {
       const formData = new FormData();
       formData.append("file", file);
 
@@ -187,7 +187,22 @@ export function useImportContacts() {
           },
         }
       );
-      return response.data;
+      
+      // S'assurer que la réponse contient les données attendues
+      const result = response.data;
+      
+      // Valider la structure de la réponse
+      if (typeof result.success !== 'number' || typeof result.failed !== 'number') {
+        throw new Error("Réponse invalide du serveur");
+      }
+      
+      return {
+        success: result.success || 0,
+        failed: result.failed || 0,
+        skipped: result.skipped || 0,
+        total: result.total || (result.success + result.failed + (result.skipped || 0)),
+        errors: result.errors || [],
+      };
     },
     onSuccess: () => {
       // Invalider tous les caches liés pour mise à jour instantanée

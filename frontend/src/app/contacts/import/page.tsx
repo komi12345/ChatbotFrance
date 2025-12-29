@@ -20,29 +20,37 @@ export default function ContactImportPage() {
   const importMutation = useImportContacts();
 
   const handleImport = async (file: File): Promise<ContactImportResult> => {
-    const result = await importMutation.mutateAsync(file);
-    
-    // Afficher un message selon le résultat
-    if (result.success > 0 && result.failed === 0) {
-      // Nouveaux contacts importés avec succès
-      const skippedMsg = result.skipped > 0 ? ` (${result.skipped} doublon(s) ignoré(s))` : "";
-      toast.success(`${result.success} contact(s) importé(s) avec succès${skippedMsg}`);
-    } else if (result.success > 0 && result.failed > 0) {
-      // Résultat mixte : certains importés, certains en erreur
-      const skippedMsg = result.skipped > 0 ? `, ${result.skipped} ignoré(s)` : "";
-      toast.warning(`${result.success} importé(s), ${result.failed} erreur(s)${skippedMsg}`);
-    } else if (result.success === 0 && result.skipped > 0 && result.failed === 0) {
-      // Tous les contacts existaient déjà - C'EST UN SUCCÈS, pas une erreur !
-      toast.success(`La liste des contacts a été mise à jour : ${result.skipped} contact(s) déjà existant(s)`);
-    } else if (result.success === 0 && result.failed > 0) {
-      // Tout a échoué
-      toast.error(`Échec de l'import : ${result.failed} erreur(s)`);
-    } else {
-      // Cas par défaut (fichier vide par exemple)
-      toast.info("Aucun contact à importer");
+    try {
+      const result = await importMutation.mutateAsync(file);
+      
+      // Afficher un message selon le résultat
+      if (result.success > 0 && result.failed === 0) {
+        // Nouveaux contacts importés avec succès
+        const skippedMsg = result.skipped > 0 ? ` (${result.skipped} doublon(s) ignoré(s))` : "";
+        toast.success(`${result.success} contact(s) importé(s) avec succès${skippedMsg}`);
+      } else if (result.success > 0 && result.failed > 0) {
+        // Résultat mixte : certains importés, certains en erreur
+        const skippedMsg = result.skipped > 0 ? `, ${result.skipped} ignoré(s)` : "";
+        toast.warning(`${result.success} importé(s), ${result.failed} erreur(s)${skippedMsg}`);
+      } else if (result.success === 0 && result.skipped > 0 && result.failed === 0) {
+        // Tous les contacts existaient déjà - C'EST UN SUCCÈS, pas une erreur !
+        toast.success(`La liste des contacts a été mise à jour : ${result.skipped} contact(s) déjà existant(s)`);
+      } else if (result.success === 0 && result.failed > 0) {
+        // Tout a échoué
+        toast.error(`Échec de l'import : ${result.failed} erreur(s)`);
+      } else {
+        // Cas par défaut (fichier vide par exemple)
+        toast.info("Aucun contact à importer");
+      }
+      
+      return result;
+    } catch (error) {
+      // Capturer l'erreur ici pour éviter qu'elle ne remonte au composant ContactImport
+      console.error("Erreur lors de l'import:", error);
+      toast.error("Une erreur est survenue lors de l'import");
+      // Retourner un résultat vide pour éviter l'affichage d'erreur dans le composant
+      throw error;
     }
-    
-    return result;
   };
 
   const handleCancel = () => {
