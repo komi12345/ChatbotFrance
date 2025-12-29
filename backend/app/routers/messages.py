@@ -87,8 +87,6 @@ async def list_messages(
     contact_cache = {}
     
     if contact_ids:
-        from app.supabase_client import get_supabase_client
-        client = get_supabase_client()
         contacts_response = client.table("contacts").select("*").in_("id", contact_ids).execute()
         contact_cache = {c["id"]: c for c in (contacts_response.data or [])}
     
