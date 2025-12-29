@@ -443,3 +443,47 @@ async def remove_contact_from_category(
     invalidate_cache_on_category_change(category_id)
     
     return None
+
+
+@router.get("/{category_id}/available-contacts")
+async def get_available_contacts_for_category(
+    category_id: int,
+    page: int = Query(1, ge=1, description="Numéro de page"),
+    size: int = Query(50, ge=1, le=100, description="Nombre d'éléments par page"),
+    search: Optional[str] = Query(None, description="Recherche par nom ou numéro"),
+    db: SupabaseDB = Depends(get_supabase_db),
+    current_user: Dict = Depends(get_current_user)
+):
+    """
+    Récupère les contacts qui ne sont PAS dans une catégorie donnée.
+    Avec pagination et recherche côté serveur.
+    
+    Retourne uniquement les contacts disponibles pour être ajoutés à cette catégorie.
+    """
+    # Vérifier que la catégorie existe
+    category = db.get_category_by_id(category_id)
+    if not category:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Catégorie non trouvée"
+        )
+    
+    skip = (page - 1) * size
+    
+    # Récupérer les contacts qui ne sont pas dans cette catégorie
+    contacts, total = db.get_contacts_not_in_category(
+        category_id=category_id,
+        skip=skip,
+        limit=size,
+        search=search
+    )
+    
+    pages = (total + size - 1) // size if total > 0 else 1
+    
+    return {
+        "items": contacts,
+        "total": total,
+        "page": page,
+        "size": size,
+        "pages": pages
+    }

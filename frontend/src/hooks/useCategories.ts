@@ -64,6 +64,37 @@ export function useCategory(id: number) {
   });
 }
 
+/**
+ * Hook pour récupérer les contacts disponibles (non présents dans une catégorie)
+ * Utilise le nouvel endpoint backend avec pagination et recherche côté serveur
+ */
+export function useAvailableContactsForCategory(
+  categoryId: number,
+  params: { page?: number; search?: string } = {}
+) {
+  const { page = 1, search = "" } = params;
+
+  return useQuery({
+    queryKey: [...categoryKeys.detail(categoryId), "available-contacts", { page, search }],
+    queryFn: async () => {
+      const searchParams = new URLSearchParams();
+      searchParams.append("page", page.toString());
+      searchParams.append("size", "50");
+      if (search) {
+        searchParams.append("search", search);
+      }
+
+      const response = await api.get<PaginatedResponse<Category>>(
+        `/categories/${categoryId}/available-contacts?${searchParams.toString()}`
+      );
+      return response.data;
+    },
+    enabled: !!categoryId,
+    staleTime: 30 * 1000, // 30 secondes - données qui changent fréquemment
+    gcTime: 5 * 60 * 1000, // 5 minutes
+  });
+}
+
 
 /**
  * Hook pour créer une catégorie avec mise à jour optimiste

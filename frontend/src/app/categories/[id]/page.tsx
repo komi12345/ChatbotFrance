@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useEffect } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { CategoryForm } from "@/components/categories/CategoryForm";
@@ -20,8 +20,8 @@ import {
   useDeleteCategory,
   useRemoveContactFromCategory,
   useAddContactsToCategory,
+  useAvailableContactsForCategory,
 } from "@/hooks/useCategories";
-import { useContacts } from "@/hooks/useContacts";
 import type { CategoryCreate, CategoryContact } from "@/types/category";
 import {
   ArrowLeft,
@@ -32,6 +32,8 @@ import {
   UserMinus,
   UserPlus,
   Search,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
 import { CategoryWhatsAppStats, WhatsAppVerificationBadge } from "@/components/whatsapp";
 import type { WhatsAppVerificationStatus } from "@/components/whatsapp";
@@ -54,15 +56,34 @@ export default function CategoryDetailPage() {
   const [removingContact, setRemovingContact] = useState<CategoryContact | null>(null);
   const [selectedContactIds, setSelectedContactIds] = useState<number[]>([]);
   const [contactSearchQuery, setContactSearchQuery] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [availableContactsPage, setAvailableContactsPage] = useState(1);
+
+  // Debounce la recherche pour éviter trop de requêtes
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(contactSearchQuery);
+      setAvailableContactsPage(1); // Reset page on search
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [contactSearchQuery]);
 
   // Hooks React Query
   const { data: category, isLoading, error, refetch } = useCategory(categoryId);
-  // Récupérer TOUS les contacts (limite augmentée à 1000)
-  const { data: allContacts, isLoading: isLoadingContacts } = useContacts({ page: 1, size: 1000 });
+  // Utiliser le nouvel endpoint pour récupérer les contacts disponibles (non présents dans la catégorie)
+  const { data: availableContactsData, isLoading: isLoadingContacts } = useAvailableContactsForCategory(
+    categoryId,
+    { page: availableContactsPage, search: debouncedSearch }
+  );
   const updateMutation = useUpdateCategory();
   const deleteMutation = useDeleteCategory();
   const removeContactMutation = useRemoveContactFromCategory();
   const addContactsMutation = useAddContactsToCategory();
+
+  // Contacts disponibles depuis le serveur (déjà filtrés côté backend)
+  const availableContacts = availableContactsData?.items || [];
+  const totalAvailableContacts = availableContactsData?.total || 0;
+  const totalPages = availableContactsData?.pages || 1;
 
   // Handlers
   const handleBack = () => {
@@ -77,9 +98,9 @@ export default function CategoryDetailPage() {
       });
       toast.success("Catégorie modifiée avec succès");
       setIsEditOpen(false);
-    } catch (error) {
+    } catch (err) {
       toast.error("Erreur lors de la modification de la catégorie");
-      console.error("Erreur lors de la modification:", error);
+      console.error("Erreur lors de la modification:", err);
     }
   };
 
@@ -88,9 +109,9 @@ export default function CategoryDetailPage() {
       await deleteMutation.mutateAsync(categoryId);
       toast.success("Catégorie supprimée avec succès");
       router.push("/categories");
-    } catch (error) {
+    } catch (err) {
       toast.error("Erreur lors de la suppression de la catégorie");
-      console.error("Erreur lors de la suppression:", error);
+      console.error("Erreur lors de la suppression:", err);
     }
   };
 
@@ -104,9 +125,9 @@ export default function CategoryDetailPage() {
       });
       toast.success("Contact retiré de la catégorie");
       setRemovingContact(null);
-    } catch (error) {
+    } catch (err) {
       toast.error("Erreur lors du retrait du contact");
-      console.error("Erreur lors du retrait du contact:", error);
+      console.error("Erreur lors du retrait du contact:", err);
     }
   };
 
@@ -122,30 +143,11 @@ export default function CategoryDetailPage() {
       setIsAddContactsOpen(false);
       setSelectedContactIds([]);
       refetch();
-    } catch (error) {
+    } catch (err) {
       toast.error("Erreur lors de l'ajout des contacts");
-      console.error("Erreur lors de l'ajout des contacts:", error);
+      console.error("Erreur lors de l'ajout des contacts:", err);
     }
   };
-
-  // Filtrer les contacts qui ne sont pas déjà dans la catégorie
-  const availableContacts = useMemo(() => {
-    const contacts = allContacts?.items?.filter(
-      (contact) => !category?.contacts?.some((c) => c.id === contact.id)
-    ) || [];
-    
-    // Filtrer par recherche si une requête est saisie
-    if (contactSearchQuery.trim()) {
-      const query = contactSearchQuery.toLowerCase();
-      return contacts.filter((contact) => {
-        const fullName = `${contact.first_name || ""} ${contact.last_name || ""}`.toLowerCase();
-        const phone = contact.full_number.toLowerCase();
-        return fullName.includes(query) || phone.includes(query);
-      });
-    }
-    
-    return contacts;
-  }, [allContacts?.items, category?.contacts, contactSearchQuery]);
 
   // État de chargement
   if (isLoading) {
@@ -254,7 +256,6 @@ export default function CategoryDetailPage() {
             {category.contacts && category.contacts.length > 0 ? (
               <div className="divide-y">
                 {category.contacts.map((contact) => {
-                  // Convert whatsapp_verified boolean to status type
                   const whatsappStatus: WhatsAppVerificationStatus = 
                     contact.whatsapp_verified === true ? 'verified' :
                     contact.whatsapp_verified === false ? 'not_whatsapp' : 
@@ -351,6 +352,7 @@ export default function CategoryDetailPage() {
         if (!open) {
           setContactSearchQuery("");
           setSelectedContactIds([]);
+          setAvailableContactsPage(1);
         }
       }}>
         <DialogContent className="max-w-lg max-h-[80vh] overflow-hidden flex flex-col">
@@ -371,24 +373,24 @@ export default function CategoryDetailPage() {
           
           {/* Compteur de contacts disponibles */}
           <p className="text-sm text-muted-foreground">
-            {availableContacts.length} contact(s) disponible(s)
+            {totalAvailableContacts} contact(s) disponible(s)
             {selectedContactIds.length > 0 && ` • ${selectedContactIds.length} sélectionné(s)`}
           </p>
           
-          <div className="flex-1 overflow-y-auto">
+          <div className="flex-1 overflow-y-auto min-h-[200px]">
             {isLoadingContacts ? (
               <div className="flex items-center justify-center py-8">
                 <LoadingSpinner size="md" text="Chargement des contacts..." />
               </div>
             ) : availableContacts.length === 0 ? (
               <p className="text-center py-8 text-muted-foreground">
-                Tous les contacts sont déjà dans cette catégorie ou aucun contact disponible.
+                {debouncedSearch 
+                  ? "Aucun contact trouvé pour cette recherche."
+                  : "Tous les contacts sont déjà dans cette catégorie."}
               </p>
             ) : (
               <div className="space-y-2">
-                {availableContacts.map((contact) => {
-                  // Convert whatsapp_verified boolean to status type for badge display
-                  // Requirements 4.3: Display WhatsApp badge next to each contact for informed selection
+                {availableContacts.map((contact: CategoryContact) => {
                   const contactWhatsappStatus: WhatsAppVerificationStatus = 
                     contact.whatsapp_verified === true ? 'verified' :
                     contact.whatsapp_verified === false ? 'not_whatsapp' : 
@@ -437,6 +439,32 @@ export default function CategoryDetailPage() {
               </div>
             )}
           </div>
+          
+          {/* Pagination */}
+          {totalPages > 1 && (
+            <div className="flex items-center justify-center gap-2 py-2 border-t">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setAvailableContactsPage(p => Math.max(1, p - 1))}
+                disabled={availableContactsPage === 1}
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </Button>
+              <span className="text-sm text-muted-foreground">
+                Page {availableContactsPage} / {totalPages}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setAvailableContactsPage(p => Math.min(totalPages, p + 1))}
+                disabled={availableContactsPage === totalPages}
+              >
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+            </div>
+          )}
+          
           <div className="flex justify-end gap-2 pt-4 border-t">
             <Button
               variant="outline"
@@ -444,6 +472,7 @@ export default function CategoryDetailPage() {
                 setIsAddContactsOpen(false);
                 setSelectedContactIds([]);
                 setContactSearchQuery("");
+                setAvailableContactsPage(1);
               }}
             >
               Annuler

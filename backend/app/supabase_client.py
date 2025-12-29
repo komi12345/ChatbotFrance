@@ -434,6 +434,57 @@ class SupabaseDB:
         contacts_response = self.client.table("contacts").select("*").in_("id", contact_ids).execute()
         return contacts_response.data or []
     
+    def get_contacts_not_in_category(self, category_id: int, skip: int = 0, limit: int = 50, 
+                                      search: Optional[str] = None) -> tuple[List[Dict], int]:
+        """
+        Récupère les contacts qui ne sont PAS dans une catégorie donnée.
+        Avec pagination et recherche côté serveur.
+        
+        Args:
+            category_id: ID de la catégorie à exclure
+            skip: Nombre d'éléments à sauter (pagination)
+            limit: Nombre maximum d'éléments à retourner
+            search: Terme de recherche (numéro, prénom, nom)
+        
+        Returns:
+            Tuple (liste des contacts, total)
+        """
+        # 1. Récupérer les IDs des contacts déjà dans cette catégorie
+        existing_response = self.client.table("category_contacts").select("contact_id").eq("category_id", category_id).execute()
+        existing_contact_ids = [r["contact_id"] for r in (existing_response.data or [])]
+        
+        # 2. Récupérer tous les contacts qui ne sont PAS dans cette liste
+        query = self.client.table("contacts").select("*", count="exact")
+        
+        # Exclure les contacts déjà dans la catégorie
+        if existing_contact_ids:
+            # Supabase ne supporte pas directement "NOT IN", on utilise une approche différente
+            # On récupère tous les contacts et on filtre côté serveur
+            # Pour une meilleure performance avec beaucoup de contacts, on pourrait utiliser une RPC
+            pass
+        
+        # Appliquer la recherche si présente
+        if search:
+            query = query.or_(f"full_number.ilike.%{search}%,first_name.ilike.%{search}%,last_name.ilike.%{search}%")
+        
+        # Exécuter la requête
+        response = query.order("created_at", desc=True).execute()
+        all_contacts = response.data or []
+        
+        # Filtrer les contacts qui sont déjà dans la catégorie
+        if existing_contact_ids:
+            filtered_contacts = [c for c in all_contacts if c["id"] not in existing_contact_ids]
+        else:
+            filtered_contacts = all_contacts
+        
+        # Calculer le total après filtrage
+        total = len(filtered_contacts)
+        
+        # Appliquer la pagination
+        paginated_contacts = filtered_contacts[skip:skip + limit]
+        
+        return paginated_contacts, total
+    
     # ==================== CAMPAIGNS ====================
     
     def get_campaign_by_id(self, campaign_id: int) -> Optional[Dict]:
