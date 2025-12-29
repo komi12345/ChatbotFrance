@@ -66,8 +66,11 @@ export function ContactImport({
       setError(null);
       const importResult = await onImport(selectedFile);
       setResult(importResult);
+      // Ne pas afficher d'erreur si le résultat est valide (même si tous sont des doublons)
     } catch (err) {
-      setError("Une erreur est survenue lors de l'import");
+      // Afficher l'erreur seulement si c'est une vraie erreur (pas un résultat valide)
+      const errorMessage = err instanceof Error ? err.message : "Une erreur est survenue lors de l'import";
+      setError(errorMessage);
       console.error("Import error:", err);
     }
   };
