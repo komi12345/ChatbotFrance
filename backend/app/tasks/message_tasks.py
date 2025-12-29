@@ -1238,6 +1238,16 @@ def update_campaign_status(self, campaign_id: int) -> dict:
     """
     Met à jour le statut d'une campagne en fonction des messages envoyés.
     
+    LOGIQUE DE CLÔTURE 2025:
+    Une campagne reste en "sending" jusqu'à ce que:
+    1. 24h se soient écoulées depuis le lancement (tous les contacts ont eu le temps d'interagir), OU
+    2. Tous les contacts aient reçu le Message 2 (interaction complète pour tous)
+    
+    Cela permet:
+    - Aux contacts de répondre pendant 24h après réception du Message 1
+    - D'avoir des statistiques complètes et professionnelles
+    - De ne pas clôturer prématurément la campagne
+    
     Args:
         campaign_id: ID de la campagne
     
@@ -1245,70 +1255,138 @@ def update_campaign_status(self, campaign_id: int) -> dict:
         Dictionnaire avec le nouveau statut
     
     Exigences: 6.6, 7.5
-    
-    Requirements 7.5: WHEN tous les messages d'une campagne sont soit 
-    "delivered/read" soit "no_interaction", THE System SHALL marquer 
-    la campagne comme "completed"
     """
     client = get_supabase_client()
     
     try:
+        from datetime import datetime, timezone, timedelta
+        
         # Récupérer la campagne directement (sans filtre user_id pour les tâches Celery)
         campaign_response = client.table("campaigns").select("*").eq("id", campaign_id).limit(1).execute()
         campaign = campaign_response.data[0] if campaign_response.data else None
         if not campaign:
             return {"success": False, "error": "Campagne non trouvée"}
         
+        # Récupérer la date de création/lancement de la campagne
+        campaign_created_at = campaign.get("created_at")
+        campaign_start_time = None
+        if campaign_created_at:
+            try:
+                campaign_start_time = datetime.fromisoformat(campaign_created_at.replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                campaign_start_time = datetime.now(timezone.utc)
+        else:
+            campaign_start_time = datetime.now(timezone.utc)
+        
+        # Calculer si 24h se sont écoulées depuis le lancement
+        hours_since_launch = (datetime.now(timezone.utc) - campaign_start_time).total_seconds() / 3600
+        is_24h_elapsed = hours_since_launch >= 24
+        
         # Compter les messages par statut
         pending_response = client.table("messages").select("id", count="exact").eq("campaign_id", campaign_id).eq("status", "pending").execute()
         pending_count = pending_response.count or 0
         
-        sent_response = client.table("messages").select("id", count="exact").eq("campaign_id", campaign_id).in_("status", ["sent", "delivered", "read"]).execute()
-        sent_count = sent_response.count or 0
+        # Compter les Message 1 envoyés (sent/delivered/read)
+        message_1_sent_response = client.table("messages").select("id", count="exact").eq(
+            "campaign_id", campaign_id
+        ).eq("message_type", "message_1").in_("status", ["sent", "delivered", "read"]).execute()
+        message_1_sent_count = message_1_sent_response.count or 0
         
-        failed_response = client.table("messages").select("id", count="exact").eq("campaign_id", campaign_id).eq("status", "failed").execute()
-        failed_count = failed_response.count or 0
+        # Compter les Message 2 envoyés (interactions complètes)
+        message_2_sent_response = client.table("messages").select("id", count="exact").eq(
+            "campaign_id", campaign_id
+        ).eq("message_type", "message_2").in_("status", ["sent", "delivered", "read"]).execute()
+        message_2_sent_count = message_2_sent_response.count or 0
         
         # Compter les messages "no_interaction" (24h sans réponse)
-        # Requirements 7.5: Ces messages comptent comme "terminés" pour le calcul du statut
-        no_interaction_response = client.table("messages").select("id", count="exact").eq("campaign_id", campaign_id).eq("status", "no_interaction").execute()
+        no_interaction_response = client.table("messages").select("id", count="exact").eq(
+            "campaign_id", campaign_id
+        ).eq("status", "no_interaction").execute()
         no_interaction_count = no_interaction_response.count or 0
         
+        # Compter les messages échoués
+        failed_response = client.table("messages").select("id", count="exact").eq(
+            "campaign_id", campaign_id
+        ).eq("status", "failed").execute()
+        failed_count = failed_response.count or 0
+        
+        # Total des messages envoyés (tous types)
+        total_sent_response = client.table("messages").select("id", count="exact").eq(
+            "campaign_id", campaign_id
+        ).in_("status", ["sent", "delivered", "read"]).execute()
+        total_sent_count = total_sent_response.count or 0
+        
+        # LOGIQUE DE CLÔTURE:
+        # La campagne est "completed" si:
+        # 1. Tous les Message 1 sont envoyés (pending_count == 0) ET
+        # 2. (24h se sont écoulées OU tous les contacts ont reçu Message 2 ou sont no_interaction)
+        
+        # Calculer si tous les contacts ont terminé leur cycle
+        # Un contact a terminé si: il a reçu Message 2 OU il est marqué no_interaction OU il a échoué
+        contacts_completed = message_2_sent_count + no_interaction_count + failed_count
+        all_contacts_completed = (message_1_sent_count > 0 and contacts_completed >= message_1_sent_count)
+        
         # Déterminer le statut de la campagne
-        # Requirements 7.5: La campagne est "completed" quand tous les messages sont
-        # soit "sent/delivered/read" soit "no_interaction" soit "failed"
-        if pending_count == 0:
-            if failed_count > 0 and sent_count == 0 and no_interaction_count == 0:
+        if pending_count > 0:
+            # Il reste des messages à envoyer
+            new_status = "sending"
+        elif not is_24h_elapsed and not all_contacts_completed:
+            # Moins de 24h et tous les contacts n'ont pas terminé -> rester en "sending"
+            # pour permettre aux contacts de répondre
+            new_status = "sending"
+            logger.info(
+                f"Campagne {campaign_id}: {hours_since_launch:.1f}h écoulées, "
+                f"en attente d'interactions ({message_2_sent_count} Message 2 envoyés, "
+                f"{no_interaction_count} no_interaction, {message_1_sent_count} Message 1 envoyés)"
+            )
+        else:
+            # 24h écoulées OU tous les contacts ont terminé -> clôturer
+            if failed_count > 0 and total_sent_count == 0:
                 new_status = "failed"
             else:
                 new_status = "completed"
-        else:
-            new_status = "sending"
+            
+            logger.info(
+                f"Campagne {campaign_id} clôturée: 24h_elapsed={is_24h_elapsed}, "
+                f"all_completed={all_contacts_completed}, hours={hours_since_launch:.1f}"
+            )
         
-        # Mettre à jour la campagne - Exigence 6.6
-        # Note: failed_count inclut maintenant les no_interaction pour les stats
+        # Mettre à jour la campagne
         total_failed = failed_count + no_interaction_count
         
-        client.table("campaigns").update({
-            "status": new_status,
-            "sent_count": sent_count,
-            "success_count": sent_count,
+        update_data = {
+            "sent_count": total_sent_count,
+            "success_count": total_sent_count,
             "failed_count": total_failed
-        }).eq("id", campaign_id).execute()
+        }
+        
+        # Ne mettre à jour le statut que s'il change
+        current_status = campaign.get("status")
+        if new_status != current_status:
+            update_data["status"] = new_status
+            if new_status == "completed":
+                update_data["completed_at"] = datetime.now(timezone.utc).isoformat()
+        
+        client.table("campaigns").update(update_data).eq("id", campaign_id).execute()
         
         logger.info(
             f"Campagne {campaign_id} mise à jour: status={new_status}, "
-            f"sent={sent_count}, failed={failed_count}, no_interaction={no_interaction_count}, pending={pending_count}"
+            f"msg1_sent={message_1_sent_count}, msg2_sent={message_2_sent_count}, "
+            f"no_interaction={no_interaction_count}, failed={failed_count}, pending={pending_count}"
         )
         
         return {
             "success": True,
             "campaign_id": campaign_id,
             "status": new_status,
-            "sent_count": sent_count,
-            "failed_count": failed_count,
+            "message_1_sent": message_1_sent_count,
+            "message_2_sent": message_2_sent_count,
             "no_interaction_count": no_interaction_count,
-            "pending_count": pending_count
+            "failed_count": failed_count,
+            "pending_count": pending_count,
+            "hours_since_launch": round(hours_since_launch, 1),
+            "is_24h_elapsed": is_24h_elapsed,
+            "all_contacts_completed": all_contacts_completed
         }
         
     except Exception as e:

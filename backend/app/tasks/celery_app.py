@@ -407,6 +407,11 @@ def recover_interrupted_campaigns():
     Détecte les campagnes en statut "sending" qui ont des messages "pending"
     mais aucune tâche Celery active, et relance l'envoi.
     
+    LOGIQUE DE CLÔTURE 2025:
+    Une campagne reste en "sending" jusqu'à ce que:
+    1. 24h se soient écoulées depuis le lancement, OU
+    2. Tous les contacts aient reçu le Message 2 (interaction complète pour tous)
+    
     ROBUSTESSE: Permet de reprendre automatiquement après un crash serveur
     ou une interruption de connexion.
     
@@ -426,52 +431,95 @@ def recover_interrupted_campaigns():
         sending_campaigns = campaigns_response.data or []
         
         recovered_count = 0
+        completed_count = 0
         
         for campaign in sending_campaigns:
             campaign_id = campaign["id"]
+            campaign_created_at = campaign.get("created_at")
+            
+            # Calculer le temps écoulé depuis le lancement
+            campaign_start_time = None
+            if campaign_created_at:
+                try:
+                    campaign_start_time = datetime.fromisoformat(campaign_created_at.replace("Z", "+00:00"))
+                except (ValueError, AttributeError):
+                    campaign_start_time = datetime.now(timezone.utc)
+            else:
+                campaign_start_time = datetime.now(timezone.utc)
+            
+            hours_since_launch = (datetime.now(timezone.utc) - campaign_start_time).total_seconds() / 3600
+            is_24h_elapsed = hours_since_launch >= 24
             
             # Vérifier s'il y a des messages pending pour cette campagne
             pending_response = client.table("messages").select("id", count="exact").eq(
                 "campaign_id", campaign_id
             ).eq("status", "pending").execute()
-            
             pending_count = pending_response.count or 0
             
+            # Compter les Message 1 envoyés
+            message_1_sent_response = client.table("messages").select("id", count="exact").eq(
+                "campaign_id", campaign_id
+            ).eq("message_type", "message_1").in_("status", ["sent", "delivered", "read"]).execute()
+            message_1_sent_count = message_1_sent_response.count or 0
+            
+            # Compter les Message 2 envoyés
+            message_2_sent_response = client.table("messages").select("id", count="exact").eq(
+                "campaign_id", campaign_id
+            ).eq("message_type", "message_2").in_("status", ["sent", "delivered", "read"]).execute()
+            message_2_sent_count = message_2_sent_response.count or 0
+            
+            # Compter les no_interaction et failed
+            no_interaction_response = client.table("messages").select("id", count="exact").eq(
+                "campaign_id", campaign_id
+            ).eq("status", "no_interaction").execute()
+            no_interaction_count = no_interaction_response.count or 0
+            
+            failed_response = client.table("messages").select("id", count="exact").eq(
+                "campaign_id", campaign_id
+            ).eq("status", "failed").execute()
+            failed_count = failed_response.count or 0
+            
+            # Calculer si tous les contacts ont terminé leur cycle
+            contacts_completed = message_2_sent_count + no_interaction_count + failed_count
+            all_contacts_completed = (message_1_sent_count > 0 and contacts_completed >= message_1_sent_count)
+            
+            # LOGIQUE DE CLÔTURE:
             if pending_count == 0:
-                # Pas de messages pending, la campagne devrait être terminée
-                # Vérifier s'il y a des messages "no_interaction" ou "sent/delivered/read"
-                # Requirements 7.5: Inclure "no_interaction" dans le calcul
-                sent_response = client.table("messages").select("id", count="exact").eq(
-                    "campaign_id", campaign_id
-                ).in_("status", ["sent", "delivered", "read"]).execute()
-                sent_count = sent_response.count or 0
-                
-                no_interaction_response = client.table("messages").select("id", count="exact").eq(
-                    "campaign_id", campaign_id
-                ).eq("status", "no_interaction").execute()
-                no_interaction_count = no_interaction_response.count or 0
-                
-                failed_response = client.table("messages").select("id", count="exact").eq(
-                    "campaign_id", campaign_id
-                ).eq("status", "failed").execute()
-                failed_count = failed_response.count or 0
-                
-                # Déterminer le statut final
-                if failed_count > 0 and sent_count == 0 and no_interaction_count == 0:
-                    new_status = "failed"
+                # Tous les Message 1 sont envoyés
+                if is_24h_elapsed or all_contacts_completed:
+                    # Clôturer la campagne
+                    total_sent_response = client.table("messages").select("id", count="exact").eq(
+                        "campaign_id", campaign_id
+                    ).in_("status", ["sent", "delivered", "read"]).execute()
+                    total_sent_count = total_sent_response.count or 0
+                    
+                    if failed_count > 0 and total_sent_count == 0:
+                        new_status = "failed"
+                    else:
+                        new_status = "completed"
+                    
+                    client.table("campaigns").update({
+                        "status": new_status,
+                        "completed_at": datetime.now(timezone.utc).isoformat()
+                    }).eq("id", campaign_id).execute()
+                    
+                    logger.info(
+                        f"Campagne {campaign_id} clôturée: status={new_status}, "
+                        f"24h_elapsed={is_24h_elapsed}, all_completed={all_contacts_completed}, "
+                        f"msg1={message_1_sent_count}, msg2={message_2_sent_count}, "
+                        f"no_interaction={no_interaction_count}"
+                    )
+                    completed_count += 1
                 else:
-                    new_status = "completed"
-                
-                # Mettre à jour le statut
-                client.table("campaigns").update({"status": new_status}).eq("id", campaign_id).execute()
-                logger.info(
-                    f"Campagne {campaign_id} marquée comme {new_status} "
-                    f"(sent={sent_count}, no_interaction={no_interaction_count}, failed={failed_count})"
-                )
+                    # Moins de 24h et pas tous les contacts ont terminé -> garder en "sending"
+                    logger.debug(
+                        f"Campagne {campaign_id} en attente d'interactions: "
+                        f"{hours_since_launch:.1f}h écoulées, "
+                        f"msg2={message_2_sent_count}/{message_1_sent_count}"
+                    )
                 continue
             
-            # Vérifier si des messages ont été envoyés récemment (dernières 10 minutes)
-            # Si oui, la campagne est probablement encore active
+            # Il y a des messages pending - vérifier si la campagne est interrompue
             ten_minutes_ago = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
             
             recent_sent_response = client.table("messages").select("id", count="exact").eq(
@@ -498,13 +546,15 @@ def recover_interrupted_campaigns():
             recovered_count += 1
         
         logger.info(
-            f"Récupération terminée: {recovered_count} campagne(s) relancée(s) sur {len(sending_campaigns)} en cours"
+            f"Récupération terminée: {recovered_count} campagne(s) relancée(s), "
+            f"{completed_count} campagne(s) clôturée(s) sur {len(sending_campaigns)} en cours"
         )
         
         return {
             "status": "success",
             "sending_campaigns": len(sending_campaigns),
-            "recovered_count": recovered_count
+            "recovered_count": recovered_count,
+            "completed_count": completed_count
         }
         
     except Exception as e:
