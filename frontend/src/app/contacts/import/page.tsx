@@ -45,11 +45,17 @@ export default function ContactImportPage() {
       
       return result;
     } catch (error) {
-      // Capturer l'erreur ici pour éviter qu'elle ne remonte au composant ContactImport
+      // Erreur réseau ou serveur - afficher le toast et retourner un résultat d'erreur
       console.error("Erreur lors de l'import:", error);
       toast.error("Une erreur est survenue lors de l'import");
-      // Retourner un résultat vide pour éviter l'affichage d'erreur dans le composant
-      throw error;
+      // Retourner un résultat d'erreur au lieu de throw pour éviter l'affichage d'erreur dans le composant
+      return {
+        success: 0,
+        failed: 1,
+        skipped: 0,
+        total: 0,
+        errors: ["Erreur de connexion au serveur"],
+      };
     }
   };
 
