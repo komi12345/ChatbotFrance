@@ -4,7 +4,7 @@ import { QueryClient } from "@tanstack/react-query";
 
 // Configuration du QueryClient pour React Query
 // Optimisé pour réduire les requêtes réseau et améliorer la réactivité
-// Requirements: 2.3 - staleTime de 2 minutes par défaut, gcTime de 10 minutes
+// Requirements: 2.2, 2.3 - staleTime de 2 minutes par défaut, gcTime de 10 minutes
 export function makeQueryClient() {
   return new QueryClient({
     defaultOptions: {
@@ -15,8 +15,9 @@ export function makeQueryClient() {
         gcTime: 10 * 60 * 1000,
         // Retry automatique en cas d'erreur
         retry: 1,
-        // Refetch automatique quand la fenêtre reprend le focus
-        refetchOnWindowFocus: true,
+        // Désactivé pour éviter les requêtes inutiles lors du changement de fenêtre
+        // Optimisation identifiée dans l'audit TanStack Query
+        refetchOnWindowFocus: false,
         // Refetch quand la connexion réseau revient
         refetchOnReconnect: true,
         // Ne pas refetch automatiquement sur mount si données fraîches

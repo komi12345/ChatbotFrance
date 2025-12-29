@@ -145,7 +145,8 @@ export function useUpdateContact() {
 }
 
 /**
- * Hook pour supprimer un contact
+ * Hook pour supprimer un contact avec mise à jour optimiste
+ * Requirements: 3.1, 3.2 - Mise à jour optimiste et rollback automatique
  */
 export function useDeleteContact() {
   const queryClient = useQueryClient();
@@ -155,7 +156,33 @@ export function useDeleteContact() {
       await api.delete(`/contacts/${id}`);
       return id;
     },
-    onSuccess: () => {
+    onMutate: async (deletedId) => {
+      // Annuler les requêtes en cours pour éviter les conflits
+      await queryClient.cancelQueries({ queryKey: ["stats"] });
+      await queryClient.cancelQueries({ queryKey: contactKeys.lists() });
+
+      // Snapshot des données actuelles pour rollback
+      const previousDashboardStats = queryClient.getQueryData(["stats", "dashboard"]);
+
+      // Mise à jour optimiste du compteur de contacts
+      queryClient.setQueryData(["stats", "dashboard"], (old: { total_contacts?: number } | undefined) => {
+        if (!old) return old;
+        return {
+          ...old,
+          total_contacts: Math.max((old.total_contacts || 0) - 1, 0),
+        };
+      });
+
+      // Retourner le contexte pour rollback
+      return { previousDashboardStats, deletedId };
+    },
+    onError: (_err, _deletedId, context) => {
+      // Rollback en cas d'erreur
+      if (context?.previousDashboardStats) {
+        queryClient.setQueryData(["stats", "dashboard"], context.previousDashboardStats);
+      }
+    },
+    onSettled: () => {
       // Invalider tous les caches liés
       queryClient.invalidateQueries({ queryKey: contactKeys.lists() });
       queryClient.invalidateQueries({ queryKey: ["categories"] });

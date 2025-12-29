@@ -8,7 +8,6 @@ import logging
 from datetime import datetime
 from typing import Optional, Dict, Any
 from sqlalchemy.orm import Session
-from sqlalchemy import and_
 
 from app.models.campaign import Campaign
 from app.models.message import Message
@@ -130,8 +129,11 @@ class AutomationService:
         ).first()
         
         # Si un Message 2 existe déjà et est en cours ou réussi, ne pas en créer un nouveau
-        # Sauf si l'exigence 4.6 demande d'envoyer à chaque interaction
-        # Dans ce cas, on crée un nouveau message à chaque fois
+        if existing_message_2 and existing_message_2.status in ["pending", "sent", "delivered", "read"]:
+            logger.info(
+                f"Message 2 déjà existant pour contact {contact_id}, campagne {campaign_id}"
+            )
+            return None
         
         # Créer le message
         message = Message(

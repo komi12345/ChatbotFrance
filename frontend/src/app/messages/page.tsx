@@ -21,7 +21,6 @@ import {
   Clock,
   Send,
   Eye,
-  EyeOff,
   MessageSquare,
 } from "lucide-react";
 

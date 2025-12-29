@@ -112,7 +112,6 @@ export function SendingProgress({
   failed: number;
   className?: string;
 }) {
-  const percentage = total > 0 ? (sent / total) * 100 : 0;
   const isComplete = sent >= total;
 
   return (

@@ -1,11 +1,9 @@
 """
 Configuration de l'application - Chargement des variables d'environnement
 """
-import os
-import sys
 from functools import lru_cache
 from pydantic_settings import BaseSettings
-from typing import List, Optional
+from typing import List
 
 
 class Settings(BaseSettings):

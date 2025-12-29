@@ -164,7 +164,8 @@ export function useUpdateCategory() {
 }
 
 /**
- * Hook pour supprimer une catégorie
+ * Hook pour supprimer une catégorie avec mise à jour optimiste
+ * Requirements: 3.1, 3.2 - Mise à jour optimiste et rollback automatique
  */
 export function useDeleteCategory() {
   const queryClient = useQueryClient();
@@ -174,7 +175,33 @@ export function useDeleteCategory() {
       await api.delete(`/categories/${id}`);
       return id;
     },
-    onSuccess: () => {
+    onMutate: async (deletedId) => {
+      // Annuler les requêtes en cours pour éviter les conflits
+      await queryClient.cancelQueries({ queryKey: ["stats"] });
+      await queryClient.cancelQueries({ queryKey: categoryKeys.lists() });
+
+      // Snapshot des données actuelles pour rollback
+      const previousDashboardStats = queryClient.getQueryData(["stats", "dashboard"]);
+
+      // Mise à jour optimiste du compteur de catégories
+      queryClient.setQueryData(["stats", "dashboard"], (old: { total_categories?: number } | undefined) => {
+        if (!old) return old;
+        return {
+          ...old,
+          total_categories: Math.max((old.total_categories || 0) - 1, 0),
+        };
+      });
+
+      // Retourner le contexte pour rollback
+      return { previousDashboardStats, deletedId };
+    },
+    onError: (_err, _deletedId, context) => {
+      // Rollback en cas d'erreur
+      if (context?.previousDashboardStats) {
+        queryClient.setQueryData(["stats", "dashboard"], context.previousDashboardStats);
+      }
+    },
+    onSettled: () => {
       // Invalider tous les caches liés
       queryClient.invalidateQueries({ queryKey: categoryKeys.lists() });
       queryClient.invalidateQueries({ queryKey: ["contacts"] });

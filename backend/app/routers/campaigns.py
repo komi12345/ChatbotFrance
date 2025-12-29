@@ -7,7 +7,6 @@ Exigences: 7.1, 7.4
 """
 import logging
 from typing import List, Optional, Dict
-from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
@@ -15,7 +14,6 @@ from app.supabase_client import SupabaseDB, get_supabase_db
 from app.schemas.campaign import (
     CampaignCreate,
     CampaignUpdate,
-    CampaignResponse,
     CampaignWithCategories,
     CampaignStats,
     CampaignRetryResult,
@@ -26,7 +24,6 @@ from app.tasks.message_tasks import (
     send_campaign_messages,
     retry_campaign_failed_messages,
 )
-from app.tasks.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 
@@ -406,10 +403,9 @@ async def send_campaign(
     try:
         lock_acquired = monitoring_service.acquire_campaign_lock(campaign_id, current_user["id"])
         if not lock_acquired:
-            lock_info = monitoring_service.get_campaign_lock_info(campaign_id)
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=f"Campagne en cours de traitement par un autre utilisateur. Réessayez dans quelques minutes."
+                detail="Campagne en cours de traitement par un autre utilisateur. Réessayez dans quelques minutes."
             )
         
         # Vérifier le quota disponible avant de lancer
@@ -503,8 +499,15 @@ async def get_campaign_stats(
 ) -> CampaignStats:
     """
     Récupère les statistiques détaillées d'une campagne (partagée entre tous les utilisateurs).
+    
+    Optimisation 2025: Cache conditionnel - cache de 60s pour les campagnes terminées,
+    pas de cache pour les campagnes en cours d'envoi.
+    
     Requirements: 5.1, 5.3 - Any user can view stats for any campaign
+    Requirements: 2.1, 2.2, 2.3 - Optimisation avec cache conditionnel
     """
+    from app.services.cache_service import get_cache_service, CacheService
+    
     campaign = db.get_campaign_by_id(campaign_id)
     
     if not campaign:
@@ -512,6 +515,17 @@ async def get_campaign_stats(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Campagne non trouvée"
         )
+    
+    # Cache conditionnel: uniquement pour les campagnes terminées
+    cache = get_cache_service()
+    cache_key = f"campaign_stats:{campaign_id}"
+    
+    # Si la campagne est terminée, essayer le cache
+    if campaign.get("status") in ("completed", "failed"):
+        cached_stats = cache.get("stats", cache_key)
+        if cached_stats is not None:
+            logger.debug(f"Stats campagne {campaign_id} récupérées depuis le cache")
+            return CampaignStats(**cached_stats)
     
     # Récupérer les stats des messages
     message_stats = db.get_campaign_message_stats(campaign_id)
@@ -528,7 +542,7 @@ async def get_campaign_stats(
     # Récupérer les détails des messages pour l'affichage
     messages = db.get_campaign_messages_with_contacts(campaign_id)
     
-    return CampaignStats(
+    stats = CampaignStats(
         campaign_id=campaign_id,
         total_recipients=campaign.get("total_recipients", 0),
         sent_count=message_stats["sent"],
@@ -541,6 +555,13 @@ async def get_campaign_stats(
         interaction_count=interaction_count,
         messages=messages
     )
+    
+    # Mettre en cache si la campagne est terminée
+    if campaign.get("status") in ("completed", "failed"):
+        cache.set("stats", cache_key, stats.model_dump(), CacheService.STATS_TTL)
+        logger.debug(f"Stats campagne {campaign_id} mises en cache (TTL: 60s)")
+    
+    return stats
 
 
 @router.post("/{campaign_id}/retry", response_model=CampaignRetryResult)

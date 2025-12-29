@@ -21,17 +21,15 @@ ROBUSTESSE 2025:
 import logging
 import asyncio
 import time
-import hashlib
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional, List
-from celery import shared_task
 from celery.exceptions import MaxRetriesExceededError, SoftTimeLimitExceeded
 from contextlib import contextmanager
 
 from app.config import settings
-from app.supabase_client import SupabaseDB, get_supabase_client
-from app.tasks.celery_app import celery_app, rate_limiter, monitoring_service
-from app.services.wassenger_service import wassenger_service, WassengerResponse
+from app.supabase_client import get_supabase_client, SupabaseDB
+from app.tasks.celery_app import celery_app, monitoring_service
+from app.services.wassenger_service import wassenger_service
 
 # Configuration du logger
 logger = logging.getLogger(__name__)
@@ -716,7 +714,6 @@ def send_campaign_messages(
         # ==========================================================================
         
         tasks_created = 0
-        current_batch = 0
         
         for i, message in enumerate(pending_messages):
             # Calculer le numéro de lot actuel

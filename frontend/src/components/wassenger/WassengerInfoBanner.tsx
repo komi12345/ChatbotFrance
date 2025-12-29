@@ -1,6 +1,6 @@
 "use client";
 
-import { Info, MessageCircle, Wifi, CheckCircle } from "lucide-react";
+import { MessageCircle, Wifi, CheckCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 interface WassengerInfoBannerProps {

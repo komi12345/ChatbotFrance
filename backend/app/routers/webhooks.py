@@ -7,7 +7,7 @@ Migration 2025: Twilio Sandbox -> Wassenger
 - L'endpoint /webhooks/wassenger est le nouvel endpoint actif
 """
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, status, Depends
@@ -15,7 +15,7 @@ from fastapi.responses import PlainTextResponse, Response
 
 from app.config import settings
 from app.supabase_client import SupabaseDB, get_supabase_db
-from app.services.wassenger_service import wassenger_service, WassengerWebhookInteraction
+from app.services.wassenger_service import wassenger_service
 
 logger = logging.getLogger(__name__)
 

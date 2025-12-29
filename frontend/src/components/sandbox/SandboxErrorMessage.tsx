@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertTriangle, MessageCircle, Clock, RefreshCw, XCircle } from "lucide-react";
+import { AlertTriangle, Clock, RefreshCw, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 export type SandboxErrorType = 

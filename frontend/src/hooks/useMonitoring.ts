@@ -19,10 +19,11 @@ export const monitoringKeys = {
 };
 
 /**
- * Default auto-refresh interval (10 seconds)
+ * Default auto-refresh interval (30 seconds)
+ * Optimized from 10s to 30s to reduce network requests by 66%
  * Requirements: 4.5
  */
-const DEFAULT_REFRESH_INTERVAL = 10000;
+const DEFAULT_REFRESH_INTERVAL = 30000;
 
 /**
  * Hook to fetch real-time monitoring statistics

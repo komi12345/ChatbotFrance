@@ -13,7 +13,6 @@ ROBUSTESSE 2025:
 import logging
 import threading
 import re
-from functools import lru_cache
 from typing import Optional, Any, Dict, List
 from supabase import create_client, Client
 from app.config import settings
@@ -592,8 +591,6 @@ class SupabaseDB:
     
     def get_campaign_message_stats(self, campaign_id: int) -> Dict:
         """Récupère les statistiques de messages d'une campagne"""
-        response = self.client.table("messages").select("status", count="exact").eq("campaign_id", campaign_id).execute()
-        
         stats = {"total": 0, "sent": 0, "delivered": 0, "read": 0, "failed": 0, "pending": 0}
         
         # Compter par statut
@@ -610,7 +607,12 @@ class SupabaseDB:
         return response.data or []
     
     def get_campaign_interaction_count(self, campaign_id: int) -> int:
-        """Compte le nombre d'interactions pour une campagne"""
+        """
+        Compte le nombre d'interactions pour une campagne.
+        
+        Optimisation 2025: Utilise une seule requête avec IN clause au lieu de N requêtes.
+        Requirements: 2.1, 2.2 - Optimisation des requêtes SQL
+        """
         # Les interactions sont liées aux messages de la campagne
         # On compte les interactions dont le message_id appartient à cette campagne
         messages_response = self.client.table("messages").select("id").eq("campaign_id", campaign_id).execute()
@@ -619,24 +621,36 @@ class SupabaseDB:
         
         message_ids = [m["id"] for m in messages_response.data]
         
-        # Compter les interactions pour ces messages
-        total_interactions = 0
-        for msg_id in message_ids:
-            count_response = self.client.table("interactions").select("id", count="exact").eq("message_id", msg_id).execute()
-            total_interactions += count_response.count or 0
-        
-        return total_interactions
+        # Optimisation: Compter toutes les interactions en une seule requête avec IN clause
+        count_response = self.client.table("interactions").select("id", count="exact").in_("message_id", message_ids).execute()
+        return count_response.count or 0
     
     def get_campaign_messages_with_contacts(self, campaign_id: int, limit: int = 100) -> List[Dict]:
-        """Récupère les messages d'une campagne avec les infos des contacts"""
+        """
+        Récupère les messages d'une campagne avec les infos des contacts.
+        
+        Optimisation 2025: Batch fetch des contacts au lieu de N requêtes individuelles.
+        Requirements: 2.1, 2.2 - Optimisation des requêtes SQL (N+1 → batch)
+        """
         response = self.client.table("messages").select(
             "id, status, message_type, content, error_message, sent_at, contact_id"
         ).eq("campaign_id", campaign_id).order("created_at", desc=True).limit(limit).execute()
         
+        if not response.data:
+            return []
+        
+        # Optimisation: Récupérer tous les contacts en une seule requête
+        contact_ids = list(set(msg.get("contact_id") for msg in response.data if msg.get("contact_id")))
+        contacts_map = {}
+        
+        if contact_ids:
+            contacts_response = self.client.table("contacts").select("*").in_("id", contact_ids).execute()
+            contacts_map = {c["id"]: c for c in (contacts_response.data or [])}
+        
         messages = []
-        for msg in (response.data or []):
-            # Récupérer les infos du contact
-            contact = self.get_contact_by_id(msg.get("contact_id"))
+        for msg in response.data:
+            # Récupérer les infos du contact depuis le cache
+            contact = contacts_map.get(msg.get("contact_id"))
             
             # Construire le nom du contact
             contact_name = None

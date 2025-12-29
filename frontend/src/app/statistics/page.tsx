@@ -24,7 +24,6 @@ import {
 import {
   MessageSquare,
   TrendingUp,
-  CheckCircle,
   CheckCircle2,
   XCircle,
   Clock,

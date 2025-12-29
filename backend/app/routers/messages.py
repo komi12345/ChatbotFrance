@@ -8,13 +8,12 @@ Performance Optimization:
 - Requirements: 1.1, 1.5, 3.2, 3.4
 """
 import logging
-from typing import List, Optional, Dict
+from typing import Optional, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.supabase_client import SupabaseDB, get_supabase_db, get_supabase_client
 from app.schemas.message import (
-    MessageResponse,
     MessageWithContact,
     MessageStats,
     MessageContactInfo,
@@ -82,8 +81,19 @@ async def list_messages(
     campaigns, _ = db.get_campaigns(skip=0, limit=1000)
     campaign_cache = {c["id"]: c for c in campaigns}
     
+    # Optimisation 2025: Batch fetch des contacts au lieu de N requêtes individuelles
+    # Requirements: 2.1, 2.2 - Optimisation des requêtes SQL (N+1 → batch)
+    contact_ids = list(set(msg.get("contact_id") for msg in messages if msg.get("contact_id")))
+    contact_cache = {}
+    
+    if contact_ids:
+        from app.supabase_client import get_supabase_client
+        client = get_supabase_client()
+        contacts_response = client.table("contacts").select("*").in_("id", contact_ids).execute()
+        contact_cache = {c["id"]: c for c in (contacts_response.data or [])}
+    
     for message in messages:
-        contact = db.get_contact_by_id(message["contact_id"]) if message.get("contact_id") else None
+        contact = contact_cache.get(message.get("contact_id"))
         campaign = campaign_cache.get(message.get("campaign_id"))
         
         contact_name = None

@@ -20,7 +20,6 @@ from pydantic import BaseModel, Field
 from app.services.auth_service import get_current_user
 from app.services.monitoring_service import (
     MonitoringService,
-    AlertLevel,
     DAILY_MESSAGE_LIMIT,
 )
 

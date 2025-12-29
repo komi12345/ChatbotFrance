@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import api from "@/lib/api";
-import type { MessageStats, DailyMessageStats, StatusDistribution } from "@/types/message";
+import type { MessageStats } from "@/types/message";
 
 /**
  * Types pour les statistiques du dashboard

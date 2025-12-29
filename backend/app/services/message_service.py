@@ -7,14 +7,13 @@ Exigences: 4.4, 6.2, 6.5, 7.1
 import logging
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
+from sqlalchemy import func
 from sqlalchemy.orm import Session
-from sqlalchemy import func, and_
 
 from app.models.campaign import Campaign
 from app.models.message import Message
 from app.models.contact import Contact
 from app.models.category import Category
-from app.models.interaction import Interaction
 from app.tasks.message_tasks import send_campaign_messages, retry_campaign_failed_messages
 
 # Configuration du logger

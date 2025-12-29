@@ -16,7 +16,6 @@ from app.supabase_client import SupabaseDB, get_supabase_db
 from app.schemas.contact import (
     ContactCreate,
     ContactUpdate,
-    ContactResponse,
     ContactWithCategories,
     ContactImportResult,
 )

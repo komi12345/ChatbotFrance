@@ -155,6 +155,13 @@ celery_app.conf.update(
             "schedule": timedelta(hours=1),
             "options": {"queue": "default"},
         },
+        # Tâche de timeout de sécurité 48h pour clôturer les campagnes bloquées
+        # Requirements: 7.5 - Exécutée toutes les 6 heures
+        "check-campaign-timeout-48h": {
+            "task": "app.tasks.celery_app.check_campaign_timeout_48h",
+            "schedule": timedelta(hours=6),
+            "options": {"queue": "default"},
+        },
     },
     
     # Configuration pour le scheduler crontab
@@ -762,4 +769,111 @@ def check_expired_interactions():
         
     except Exception as e:
         logger.error(f"Erreur lors de la vérification des interactions 24h: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@celery_app.task(name="app.tasks.celery_app.check_campaign_timeout_48h")
+def check_campaign_timeout_48h():
+    """
+    Tâche périodique pour clôturer les campagnes de plus de 48h.
+    
+    Exécutée toutes les 6 heures pour:
+    1. Trouver les campagnes en statut "sending" créées il y a plus de 48h
+    2. Marquer tous les messages "pending" comme "failed" (timeout)
+    3. Mettre à jour le statut de la campagne via update_campaign_status
+    
+    Cette tâche est un filet de sécurité pour éviter les campagnes "zombies"
+    qui resteraient bloquées en statut "sending" indéfiniment.
+    
+    Requirements: 7.5 - Timeout de sécurité 48h
+    """
+    try:
+        from app.supabase_client import get_supabase_client
+        from app.tasks.message_tasks import update_campaign_status
+        
+        logger.info("Démarrage de la vérification du timeout 48h des campagnes")
+        
+        client = get_supabase_client()
+        
+        # Calculer le timestamp de coupure (48h en arrière)
+        cutoff_time = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
+        
+        # Trouver les campagnes en statut "sending" créées il y a plus de 48h
+        campaigns_response = client.table("campaigns").select(
+            "id, name, created_at"
+        ).eq(
+            "status", "sending"
+        ).lt(
+            "created_at", cutoff_time
+        ).execute()
+        
+        campaigns_to_close = campaigns_response.data or []
+        
+        logger.info(f"Trouvé {len(campaigns_to_close)} campagne(s) en timeout 48h")
+        
+        closed_count = 0
+        total_messages_failed = 0
+        
+        for campaign in campaigns_to_close:
+            campaign_id = campaign["id"]
+            campaign_name = campaign["name"]
+            
+            try:
+                # Compter les messages pending avant de les marquer
+                pending_response = client.table("messages").select(
+                    "id", count="exact"
+                ).eq(
+                    "campaign_id", campaign_id
+                ).eq(
+                    "status", "pending"
+                ).execute()
+                
+                pending_count = pending_response.count or 0
+                
+                if pending_count > 0:
+                    # Marquer tous les messages pending comme "failed" avec message de timeout
+                    client.table("messages").update({
+                        "status": "failed",
+                        "error_message": "Timeout 48h - campagne clôturée automatiquement"
+                    }).eq(
+                        "campaign_id", campaign_id
+                    ).eq(
+                        "status", "pending"
+                    ).execute()
+                    
+                    total_messages_failed += pending_count
+                    
+                    logger.info(
+                        f"Campagne {campaign_id} ({campaign_name}): "
+                        f"{pending_count} message(s) pending marqué(s) comme failed (timeout 48h)"
+                    )
+                
+                # Mettre à jour le statut de la campagne
+                update_campaign_status.delay(campaign_id)
+                
+                closed_count += 1
+                
+                logger.info(
+                    f"Campagne {campaign_id} ({campaign_name}) clôturée (timeout 48h)"
+                )
+                
+            except Exception as e:
+                logger.error(
+                    f"Erreur lors de la clôture de la campagne {campaign_id}: {e}"
+                )
+        
+        logger.info(
+            f"Vérification timeout 48h terminée: {closed_count} campagne(s) clôturée(s), "
+            f"{total_messages_failed} message(s) marqué(s) comme failed"
+        )
+        
+        return {
+            "status": "success",
+            "campaigns_checked": len(campaigns_to_close),
+            "campaigns_closed": closed_count,
+            "messages_failed": total_messages_failed
+        }
+        
+    except Exception as e:
+        logger.error(f"Erreur lors de la vérification du timeout 48h: {e}")
         return {"status": "error", "message": str(e)}

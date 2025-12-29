@@ -1,6 +1,6 @@
 "use client";
 
-import { CheckCircle, AlertCircle, Wifi, WifiOff } from "lucide-react";
+import { AlertCircle, Wifi, WifiOff } from "lucide-react";
 import {
   Tooltip,
   TooltipContent,

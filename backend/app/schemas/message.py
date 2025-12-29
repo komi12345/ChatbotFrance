@@ -2,7 +2,7 @@
 Schémas Pydantic pour les messages
 """
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional
 from pydantic import BaseModel
 
 

@@ -250,4 +250,206 @@ describe('Optimistic Updates - Checkpoint 12', () => {
       expect(updatedStats.estimated_cost).toBe(5.0);
     });
   });
+
+  describe('Contact Deletion - Optimistic Update', () => {
+    it('should immediately decrement total_contacts on deletion', async () => {
+      // Setup: Set initial dashboard stats in cache
+      const initialStats = {
+        total_contacts: 10,
+        total_categories: 5,
+        total_messages: 100,
+        success_rate: 95,
+        total_campaigns: 3,
+        estimated_cost: 5.0,
+      };
+
+      queryClient.setQueryData(['stats', 'dashboard'], initialStats);
+
+      // Simulate the onMutate logic from useDeleteContact
+      await queryClient.cancelQueries({ queryKey: ['stats'] });
+      
+      const previousDashboardStats = queryClient.getQueryData(['stats', 'dashboard']);
+      
+      // Apply optimistic update (decrement)
+      queryClient.setQueryData(['stats', 'dashboard'], (old: typeof initialStats | undefined) => {
+        if (!old) return old;
+        return {
+          ...old,
+          total_contacts: Math.max((old.total_contacts || 0) - 1, 0),
+        };
+      });
+
+      // Verify: Stats should be immediately updated
+      const updatedStats = queryClient.getQueryData(['stats', 'dashboard']) as typeof initialStats;
+      
+      expect(updatedStats.total_contacts).toBe(9);
+      expect(previousDashboardStats).toEqual(initialStats);
+    });
+
+    it('should rollback contact deletion on error', async () => {
+      // Setup: Set initial dashboard stats in cache
+      const initialStats = {
+        total_contacts: 10,
+        total_categories: 5,
+        total_messages: 100,
+        success_rate: 95,
+        total_campaigns: 3,
+        estimated_cost: 5.0,
+      };
+
+      queryClient.setQueryData(['stats', 'dashboard'], initialStats);
+
+      // Simulate onMutate
+      const previousDashboardStats = queryClient.getQueryData(['stats', 'dashboard']);
+      
+      // Apply optimistic update (decrement)
+      queryClient.setQueryData(['stats', 'dashboard'], (old: typeof initialStats | undefined) => {
+        if (!old) return old;
+        return {
+          ...old,
+          total_contacts: Math.max((old.total_contacts || 0) - 1, 0),
+        };
+      });
+
+      // Verify optimistic update was applied
+      const afterOptimistic = queryClient.getQueryData(['stats', 'dashboard']) as typeof initialStats;
+      expect(afterOptimistic.total_contacts).toBe(9);
+
+      // Simulate onError - rollback
+      if (previousDashboardStats) {
+        queryClient.setQueryData(['stats', 'dashboard'], previousDashboardStats);
+      }
+
+      // Verify: Stats should be rolled back to original
+      const afterRollback = queryClient.getQueryData(['stats', 'dashboard']) as typeof initialStats;
+      expect(afterRollback.total_contacts).toBe(10);
+      expect(afterRollback).toEqual(initialStats);
+    });
+
+    it('should not go below zero on deletion', () => {
+      const initialStats = {
+        total_contacts: 0,
+        total_categories: 5,
+        total_messages: 100,
+        success_rate: 95,
+        total_campaigns: 3,
+        estimated_cost: 5.0,
+      };
+
+      queryClient.setQueryData(['stats', 'dashboard'], initialStats);
+
+      // Apply optimistic update (decrement from 0)
+      queryClient.setQueryData(['stats', 'dashboard'], (old: typeof initialStats | undefined) => {
+        if (!old) return old;
+        return {
+          ...old,
+          total_contacts: Math.max((old.total_contacts || 0) - 1, 0),
+        };
+      });
+
+      const updatedStats = queryClient.getQueryData(['stats', 'dashboard']) as typeof initialStats;
+      expect(updatedStats.total_contacts).toBe(0); // Should not go negative
+    });
+  });
+
+  describe('Category Deletion - Optimistic Update', () => {
+    it('should immediately decrement total_categories on deletion', async () => {
+      // Setup: Set initial dashboard stats in cache
+      const initialStats = {
+        total_contacts: 10,
+        total_categories: 5,
+        total_messages: 100,
+        success_rate: 95,
+        total_campaigns: 3,
+        estimated_cost: 5.0,
+      };
+
+      queryClient.setQueryData(['stats', 'dashboard'], initialStats);
+
+      // Simulate the onMutate logic from useDeleteCategory
+      await queryClient.cancelQueries({ queryKey: ['stats'] });
+      
+      const previousDashboardStats = queryClient.getQueryData(['stats', 'dashboard']);
+      
+      // Apply optimistic update (decrement)
+      queryClient.setQueryData(['stats', 'dashboard'], (old: typeof initialStats | undefined) => {
+        if (!old) return old;
+        return {
+          ...old,
+          total_categories: Math.max((old.total_categories || 0) - 1, 0),
+        };
+      });
+
+      // Verify: Stats should be immediately updated
+      const updatedStats = queryClient.getQueryData(['stats', 'dashboard']) as typeof initialStats;
+      
+      expect(updatedStats.total_categories).toBe(4);
+      expect(previousDashboardStats).toEqual(initialStats);
+    });
+
+    it('should rollback category deletion on error', async () => {
+      // Setup: Set initial dashboard stats in cache
+      const initialStats = {
+        total_contacts: 10,
+        total_categories: 5,
+        total_messages: 100,
+        success_rate: 95,
+        total_campaigns: 3,
+        estimated_cost: 5.0,
+      };
+
+      queryClient.setQueryData(['stats', 'dashboard'], initialStats);
+
+      // Simulate onMutate
+      const previousDashboardStats = queryClient.getQueryData(['stats', 'dashboard']);
+      
+      // Apply optimistic update (decrement)
+      queryClient.setQueryData(['stats', 'dashboard'], (old: typeof initialStats | undefined) => {
+        if (!old) return old;
+        return {
+          ...old,
+          total_categories: Math.max((old.total_categories || 0) - 1, 0),
+        };
+      });
+
+      // Verify optimistic update was applied
+      const afterOptimistic = queryClient.getQueryData(['stats', 'dashboard']) as typeof initialStats;
+      expect(afterOptimistic.total_categories).toBe(4);
+
+      // Simulate onError - rollback
+      if (previousDashboardStats) {
+        queryClient.setQueryData(['stats', 'dashboard'], previousDashboardStats);
+      }
+
+      // Verify: Stats should be rolled back to original
+      const afterRollback = queryClient.getQueryData(['stats', 'dashboard']) as typeof initialStats;
+      expect(afterRollback.total_categories).toBe(5);
+      expect(afterRollback).toEqual(initialStats);
+    });
+
+    it('should not go below zero on category deletion', () => {
+      const initialStats = {
+        total_contacts: 10,
+        total_categories: 0,
+        total_messages: 100,
+        success_rate: 95,
+        total_campaigns: 3,
+        estimated_cost: 5.0,
+      };
+
+      queryClient.setQueryData(['stats', 'dashboard'], initialStats);
+
+      // Apply optimistic update (decrement from 0)
+      queryClient.setQueryData(['stats', 'dashboard'], (old: typeof initialStats | undefined) => {
+        if (!old) return old;
+        return {
+          ...old,
+          total_categories: Math.max((old.total_categories || 0) - 1, 0),
+        };
+      });
+
+      const updatedStats = queryClient.getQueryData(['stats', 'dashboard']) as typeof initialStats;
+      expect(updatedStats.total_categories).toBe(0); // Should not go negative
+    });
+  });
 });
