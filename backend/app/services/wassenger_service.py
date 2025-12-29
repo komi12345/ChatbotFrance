@@ -179,17 +179,20 @@ class WassengerService:
             }
         )
     
-    def _get_client(self) -> httpx.AsyncClient:
+    def _get_client(self, timeout: float = 30.0) -> httpx.AsyncClient:
         """
         Crée un nouveau client HTTP async pour chaque requête.
         Évite les problèmes d'event loop fermé dans Celery.
+        
+        Args:
+            timeout: Timeout en secondes pour les requêtes (défaut: 30s)
         """
         return httpx.AsyncClient(
             headers={
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json"
             },
-            timeout=30.0
+            timeout=timeout
         )
 
     def format_phone_number(self, phone: str) -> str:
@@ -386,7 +389,7 @@ class WassengerService:
             except Exception:
                 pass  # Ignorer les erreurs de fermeture
 
-    async def check_whatsapp_exists(self, phone: str) -> WhatsAppExistsResponse:
+    async def check_whatsapp_exists(self, phone: str, max_retries: int = 2) -> WhatsAppExistsResponse:
         """
         Vérifie si un numéro de téléphone est enregistré sur WhatsApp via Wassenger API.
         
@@ -395,6 +398,7 @@ class WassengerService:
         
         Args:
             phone: Numéro de téléphone à vérifier (avec ou sans +, avec ou sans espaces)
+            max_retries: Nombre maximum de tentatives en cas de timeout (défaut: 2)
         
         Returns:
             WhatsAppExistsResponse avec le résultat de la vérification:
@@ -404,8 +408,14 @@ class WassengerService:
         
         Requirements: 1.1, 1.3
         """
+        import asyncio
+        
+        # Timeout plus long pour la vérification WhatsApp (60 secondes)
+        # car l'API Wassenger doit communiquer avec WhatsApp
+        VERIFICATION_TIMEOUT = 60.0
+        
         # Créer un nouveau client pour chaque requête (évite event loop closed)
-        client = self._get_client()
+        client = self._get_client(timeout=VERIFICATION_TIMEOUT)
         
         # Formater le numéro au format Wassenger (sans +)
         formatted_phone = self.format_phone_number(phone)
@@ -521,10 +531,27 @@ class WassengerService:
                 )
                 
         except httpx.TimeoutException as e:
-            # Gérer les timeouts réseau
+            # Gérer les timeouts réseau avec retry
             # Requirements: 1.3
+            logger.warning(
+                f"Timeout lors de la vérification WhatsApp (tentative): {str(e)}",
+                extra={"phone": formatted_phone, "max_retries": max_retries}
+            )
+            
+            # Fermer le client actuel
+            try:
+                await client.aclose()
+            except Exception:
+                pass
+            
+            # Retry si on a encore des tentatives
+            if max_retries > 0:
+                logger.info(f"Retry vérification WhatsApp pour {formatted_phone}, tentatives restantes: {max_retries}")
+                await asyncio.sleep(2)  # Attendre 2 secondes avant retry
+                return await self.check_whatsapp_exists(phone, max_retries - 1)
+            
             logger.error(
-                f"Timeout lors de la vérification WhatsApp: {str(e)}",
+                f"Timeout définitif lors de la vérification WhatsApp après toutes les tentatives: {str(e)}",
                 extra={"phone": formatted_phone}
             )
             
@@ -532,7 +559,7 @@ class WassengerService:
                 exists=False,
                 phone=formatted_phone,
                 error_code="timeout",
-                error_message="La requête a expiré. Veuillez réessayer."
+                error_message="La vérification WhatsApp a expiré après plusieurs tentatives. Veuillez réessayer plus tard."
             )
             
         except httpx.RequestError as e:
