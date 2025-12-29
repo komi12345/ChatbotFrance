@@ -23,6 +23,7 @@ import {
   useAvailableContactsForCategory,
 } from "@/hooks/useCategories";
 import type { CategoryCreate, CategoryContact } from "@/types/category";
+import type { Contact } from "@/types/contact";
 import {
   ArrowLeft,
   Edit,
@@ -390,7 +391,7 @@ export default function CategoryDetailPage() {
               </p>
             ) : (
               <div className="space-y-2">
-                {availableContacts.map((contact: CategoryContact) => {
+                {availableContacts.map((contact: Contact) => {
                   const contactWhatsappStatus: WhatsAppVerificationStatus = 
                     contact.whatsapp_verified === true ? 'verified' :
                     contact.whatsapp_verified === false ? 'not_whatsapp' : 

@@ -9,6 +9,7 @@ import type {
   CategoryWithContacts,
   AddContactsToCategory,
 } from "@/types/category";
+import type { Contact } from "@/types/contact";
 
 // Clés de cache pour React Query
 export const categoryKeys = {
@@ -84,7 +85,7 @@ export function useAvailableContactsForCategory(
         searchParams.append("search", search);
       }
 
-      const response = await api.get<PaginatedResponse<Category>>(
+      const response = await api.get<PaginatedResponse<Contact>>(
         `/categories/${categoryId}/available-contacts?${searchParams.toString()}`
       );
       return response.data;
