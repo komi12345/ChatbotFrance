@@ -23,21 +23,24 @@ export default function ContactImportPage() {
     try {
       const result = await importMutation.mutateAsync(file);
       
-      // Afficher un seul message selon le résultat
-      if (result.failed === 0 && result.success > 0) {
-        // Tout est OK
+      // Afficher un message selon le résultat
+      if (result.success > 0 && result.failed === 0) {
+        // Nouveaux contacts importés avec succès
         const skippedMsg = result.skipped > 0 ? ` (${result.skipped} doublon(s) ignoré(s))` : "";
         toast.success(`${result.success} contact(s) importé(s) avec succès${skippedMsg}`);
+      } else if (result.success > 0 && result.failed > 0) {
+        // Résultat mixte : certains importés, certains en erreur
+        const skippedMsg = result.skipped > 0 ? `, ${result.skipped} ignoré(s)` : "";
+        toast.warning(`${result.success} importé(s), ${result.failed} erreur(s)${skippedMsg}`);
+      } else if (result.success === 0 && result.skipped > 0) {
+        // Tous les contacts existaient déjà - C'EST UN SUCCÈS, pas une erreur !
+        toast.success(`Traitement terminé : ${result.skipped} contact(s) déjà existant(s)`);
       } else if (result.success === 0 && result.failed > 0) {
         // Tout a échoué
         toast.error(`Échec de l'import : ${result.failed} erreur(s)`);
-      } else if (result.success === 0 && result.skipped > 0 && result.failed === 0) {
-        // Tous les contacts existaient déjà
-        toast.warning(`${result.skipped} contact(s) déjà existant(s), aucun nouveau contact importé`);
-      } else if (result.success > 0 && result.failed > 0) {
-        // Résultat mixte
-        const skippedMsg = result.skipped > 0 ? `, ${result.skipped} ignoré(s)` : "";
-        toast.warning(`${result.success} importé(s), ${result.failed} erreur(s)${skippedMsg}`);
+      } else {
+        // Cas par défaut (fichier vide par exemple)
+        toast.info("Aucun contact à importer");
       }
       
       return result;
