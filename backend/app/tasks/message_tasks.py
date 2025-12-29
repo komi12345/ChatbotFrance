@@ -37,23 +37,24 @@ logger = logging.getLogger(__name__)
 # ==========================================================================
 # CONFIGURATION WASSENGER - ANTI-BAN SETTINGS 2025
 # ==========================================================================
-# Rate limit Wassenger: 25 secondes entre chaque message
+# Rate limit Wassenger: délai entre chaque message
 # IMPORTANT: WhatsApp peut bannir les numéros qui envoient trop vite !
 # 
 # Recommandations 2025 pour éviter les bans:
-# - Nouveaux comptes: 30-60 secondes entre messages
-# - Comptes matures (>6 mois): 20-30 secondes entre messages
+# - Nouveaux comptes: 10-15 secondes entre messages
+# - Comptes matures (>6 mois): 3-5 secondes entre messages
 # - Messages identiques: risque de ban après 20-30 envois
 # - Messages personnalisés: permet d'envoyer 500+ messages en sécurité
 #
-# Configuration actuelle: 25 secondes (sécuritaire pour la plupart des comptes)
-# Pour 1000 messages: ~7 heures d'envoi (1000 * 25s = 25000s ≈ 6.9h)
-WASSENGER_RATE_LIMIT_SECONDS = 25
+# Configuration actuelle: 5 secondes (optimisé pour comptes matures)
+# Pour 100 messages: ~8 minutes d'envoi (100 * 5s = 500s ≈ 8min)
+# Pour 1000 messages: ~1.5 heures d'envoi (1000 * 5s = 5000s ≈ 1.4h)
+WASSENGER_RATE_LIMIT_SECONDS = 5
 
 # Batch configuration pour envois massifs
-# Envoyer par lots de 25 messages, puis pause de 5 minutes
-BATCH_SIZE = 25
-BATCH_PAUSE_SECONDS = 300  # 5 minutes de pause entre les lots
+# Envoyer par lots de 50 messages, puis pause de 60 secondes
+BATCH_SIZE = 50
+BATCH_PAUSE_SECONDS = 60  # 1 minute de pause entre les lots
 
 # Délai avant l'envoi du Message 2 (24 heures en secondes)
 MESSAGE_2_DELAY_SECONDS = 24 * 60 * 60  # 86400 secondes = 24h
