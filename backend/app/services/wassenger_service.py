@@ -410,9 +410,9 @@ class WassengerService:
         """
         import asyncio
         
-        # Timeout plus long pour la vérification WhatsApp (60 secondes)
-        # car l'API Wassenger doit communiquer avec WhatsApp
-        VERIFICATION_TIMEOUT = 60.0
+        # Timeout très long pour la vérification WhatsApp (5 minutes = 300 secondes)
+        # car l'API Wassenger doit communiquer avec WhatsApp et peut être lente
+        VERIFICATION_TIMEOUT = 300.0
         
         # Créer un nouveau client pour chaque requête (évite event loop closed)
         client = self._get_client(timeout=VERIFICATION_TIMEOUT)
