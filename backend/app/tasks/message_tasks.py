@@ -1272,7 +1272,13 @@ def update_campaign_status(self, campaign_id: int) -> dict:
         campaign_start_time = None
         if campaign_created_at:
             try:
-                campaign_start_time = datetime.fromisoformat(campaign_created_at.replace("Z", "+00:00"))
+                # Parser le timestamp ISO et s'assurer qu'il a une timezone
+                parsed_time = datetime.fromisoformat(campaign_created_at.replace("Z", "+00:00"))
+                # Si le datetime est naive (sans timezone), ajouter UTC
+                if parsed_time.tzinfo is None:
+                    campaign_start_time = parsed_time.replace(tzinfo=timezone.utc)
+                else:
+                    campaign_start_time = parsed_time
             except (ValueError, AttributeError):
                 campaign_start_time = datetime.now(timezone.utc)
         else:
