@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { CategoryForm } from "@/components/categories/CategoryForm";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import {
   Dialog,
   DialogContent,
@@ -30,6 +31,7 @@ import {
   Phone,
   UserMinus,
   UserPlus,
+  Search,
 } from "lucide-react";
 import { CategoryWhatsAppStats, WhatsAppVerificationBadge } from "@/components/whatsapp";
 import type { WhatsAppVerificationStatus } from "@/components/whatsapp";
@@ -51,10 +53,12 @@ export default function CategoryDetailPage() {
   const [isAddContactsOpen, setIsAddContactsOpen] = useState(false);
   const [removingContact, setRemovingContact] = useState<CategoryContact | null>(null);
   const [selectedContactIds, setSelectedContactIds] = useState<number[]>([]);
+  const [contactSearchQuery, setContactSearchQuery] = useState("");
 
   // Hooks React Query
   const { data: category, isLoading, error, refetch } = useCategory(categoryId);
-  const { data: allContacts, isLoading: isLoadingContacts } = useContacts({ page: 1, size: 100 });
+  // Récupérer TOUS les contacts (limite augmentée à 1000)
+  const { data: allContacts, isLoading: isLoadingContacts } = useContacts({ page: 1, size: 1000 });
   const updateMutation = useUpdateCategory();
   const deleteMutation = useDeleteCategory();
   const removeContactMutation = useRemoveContactFromCategory();
@@ -125,9 +129,23 @@ export default function CategoryDetailPage() {
   };
 
   // Filtrer les contacts qui ne sont pas déjà dans la catégorie
-  const availableContacts = allContacts?.items?.filter(
-    (contact) => !category?.contacts?.some((c) => c.id === contact.id)
-  ) || [];
+  const availableContacts = useMemo(() => {
+    const contacts = allContacts?.items?.filter(
+      (contact) => !category?.contacts?.some((c) => c.id === contact.id)
+    ) || [];
+    
+    // Filtrer par recherche si une requête est saisie
+    if (contactSearchQuery.trim()) {
+      const query = contactSearchQuery.toLowerCase();
+      return contacts.filter((contact) => {
+        const fullName = `${contact.first_name || ""} ${contact.last_name || ""}`.toLowerCase();
+        const phone = contact.full_number.toLowerCase();
+        return fullName.includes(query) || phone.includes(query);
+      });
+    }
+    
+    return contacts;
+  }, [allContacts?.items, category?.contacts, contactSearchQuery]);
 
   // État de chargement
   if (isLoading) {
@@ -328,11 +346,35 @@ export default function CategoryDetailPage() {
       />
 
       {/* Modal d'ajout de contacts */}
-      <Dialog open={isAddContactsOpen} onOpenChange={setIsAddContactsOpen}>
+      <Dialog open={isAddContactsOpen} onOpenChange={(open) => {
+        setIsAddContactsOpen(open);
+        if (!open) {
+          setContactSearchQuery("");
+          setSelectedContactIds([]);
+        }
+      }}>
         <DialogContent className="max-w-lg max-h-[80vh] overflow-hidden flex flex-col">
           <DialogHeader>
             <DialogTitle>Ajouter des contacts à la catégorie</DialogTitle>
           </DialogHeader>
+          
+          {/* Barre de recherche */}
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Rechercher par nom ou numéro..."
+              value={contactSearchQuery}
+              onChange={(e) => setContactSearchQuery(e.target.value)}
+              className="pl-9"
+            />
+          </div>
+          
+          {/* Compteur de contacts disponibles */}
+          <p className="text-sm text-muted-foreground">
+            {availableContacts.length} contact(s) disponible(s)
+            {selectedContactIds.length > 0 && ` • ${selectedContactIds.length} sélectionné(s)`}
+          </p>
+          
           <div className="flex-1 overflow-y-auto">
             {isLoadingContacts ? (
               <div className="flex items-center justify-center py-8">
@@ -401,6 +443,7 @@ export default function CategoryDetailPage() {
               onClick={() => {
                 setIsAddContactsOpen(false);
                 setSelectedContactIds([]);
+                setContactSearchQuery("");
               }}
             >
               Annuler
