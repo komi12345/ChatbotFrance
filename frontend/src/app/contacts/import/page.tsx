@@ -45,16 +45,26 @@ export default function ContactImportPage() {
       
       return result;
     } catch (error) {
-      // Erreur réseau ou serveur - afficher le toast et retourner un résultat d'erreur
+      // Erreur réseau ou serveur - afficher le toast approprié
       console.error("Erreur lors de l'import:", error);
-      toast.error("Une erreur est survenue lors de l'import");
+      
+      // Vérifier si c'est un timeout
+      const isTimeout = error instanceof Error && 
+        (error.message.includes("timeout") || error.message.includes("ECONNABORTED"));
+      
+      if (isTimeout) {
+        toast.error("L'import prend trop de temps. Veuillez réessayer avec un fichier plus petit.");
+      } else {
+        toast.error("Une erreur est survenue lors de l'import");
+      }
+      
       // Retourner un résultat d'erreur au lieu de throw pour éviter l'affichage d'erreur dans le composant
       return {
         success: 0,
         failed: 1,
         skipped: 0,
         total: 0,
-        errors: ["Erreur de connexion au serveur"],
+        errors: [isTimeout ? "Timeout - le serveur met trop de temps à répondre" : "Erreur de connexion au serveur"],
       };
     }
   };

@@ -169,6 +169,7 @@ export function useDeleteContact() {
 /**
  * Hook pour importer des contacts depuis un fichier CSV
  * Invalide tous les caches liés après import réussi
+ * Note: Timeout augmenté à 5 minutes pour les gros fichiers CSV
  */
 export function useImportContacts() {
   const queryClient = useQueryClient();
@@ -185,6 +186,8 @@ export function useImportContacts() {
           headers: {
             "Content-Type": "multipart/form-data",
           },
+          // Timeout de 5 minutes pour les gros fichiers CSV (265+ contacts)
+          timeout: 5 * 60 * 1000,
         }
       );
       
