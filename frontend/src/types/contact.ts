@@ -38,9 +38,11 @@ export interface ContactUpdate {
 }
 
 export interface ContactImportResult {
-  success_count: number;
-  error_count: number;
-  errors: ContactImportError[];
+  total: number;
+  success: number;
+  failed: number;
+  skipped: number;
+  errors: string[];
 }
 
 export interface ContactImportError {

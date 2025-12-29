@@ -351,11 +351,17 @@ async def delete_contact(
 async def import_contacts_csv(
     file: UploadFile = File(..., description="Fichier CSV à importer"),
     category_id: Optional[int] = Query(None, description="ID de catégorie pour associer les contacts importés"),
+    skip_duplicates: bool = Query(True, description="Ignorer les doublons au lieu de les compter comme erreurs"),
     db: SupabaseDB = Depends(get_supabase_db),
     current_user: Dict = Depends(get_current_user)
 ) -> ContactImportResult:
     """
     Importe des contacts depuis un fichier CSV.
+    
+    Paramètres:
+    - file: Fichier CSV avec colonnes obligatoires: phone_number, country_code
+    - category_id: ID de catégorie pour associer les contacts (optionnel)
+    - skip_duplicates: Si True, les doublons sont ignorés silencieusement (défaut: True)
     """
     # Vérifier le type de fichier
     if not file.filename.endswith('.csv'):
@@ -410,6 +416,7 @@ async def import_contacts_csv(
     total = 0
     success = 0
     failed = 0
+    skipped = 0
     errors = []
     
     for row_num, row in enumerate(csv_reader, start=2):
@@ -433,9 +440,21 @@ async def import_contacts_csv(
         existing = db.get_contact_by_full_number_global(full_number)
         
         if existing:
-            failed += 1
-            errors.append(f"Ligne {row_num}: Le numéro '{full_number}' existe déjà")
-            continue
+            if skip_duplicates:
+                # Mode skip: ignorer silencieusement les doublons
+                skipped += 1
+                # Si une catégorie est spécifiée, associer le contact existant à cette catégorie
+                if category_id:
+                    try:
+                        db.add_contact_to_category(existing["id"], category_id)
+                    except Exception:
+                        pass  # Ignorer si déjà associé
+                continue
+            else:
+                # Mode strict: compter comme erreur
+                failed += 1
+                errors.append(f"Ligne {row_num}: Le numéro '{full_number}' existe déjà")
+                continue
         
         # Créer le contact
         try:
@@ -461,7 +480,7 @@ async def import_contacts_csv(
     
     logger.info(
         f"Import CSV terminé par utilisateur {current_user['id']}: "
-        f"{success} succès, {failed} échecs sur {total} lignes"
+        f"{success} succès, {skipped} ignorés, {failed} échecs sur {total} lignes"
     )
     
     # Invalider le cache si des contacts ont été créés
@@ -475,6 +494,7 @@ async def import_contacts_csv(
         total=total,
         success=success,
         failed=failed,
+        skipped=skipped,
         errors=errors[:50]
     )
 

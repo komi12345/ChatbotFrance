@@ -173,49 +173,55 @@ export function ContactImport({
       {result && (
         <div className="space-y-4">
           {/* Résumé */}
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-3 gap-4">
             <div className="p-4 bg-[#D1FAE5] rounded-xl">
               <div className="flex items-center gap-2 text-[#059669]">
                 <CheckCircle className="h-5 w-5" />
-                <span className="font-medium">Importés avec succès</span>
+                <span className="font-medium">Importés</span>
               </div>
-              <p className="text-2xl font-bold mt-2 text-[#065F46]">{result.success_count}</p>
+              <p className="text-2xl font-bold mt-2 text-[#065F46]">{result.success}</p>
+            </div>
+            <div className="p-4 bg-[#FEF3C7] rounded-xl">
+              <div className="flex items-center gap-2 text-[#D97706]">
+                <FileText className="h-5 w-5" />
+                <span className="font-medium">Ignorés (doublons)</span>
+              </div>
+              <p className="text-2xl font-bold mt-2 text-[#92400E]">{result.skipped || 0}</p>
             </div>
             <div className="p-4 bg-[#FEE2E2] rounded-xl">
               <div className="flex items-center gap-2 text-[#DC2626]">
                 <XCircle className="h-5 w-5" />
                 <span className="font-medium">Erreurs</span>
               </div>
-              <p className="text-2xl font-bold mt-2 text-[#991B1B]">{result.error_count}</p>
+              <p className="text-2xl font-bold mt-2 text-[#991B1B]">{result.failed}</p>
             </div>
+          </div>
+          
+          {/* Message de résumé */}
+          <div className="p-3 bg-muted rounded-lg text-sm text-muted-foreground">
+            Total traité : {result.total} lignes
+            {result.skipped > 0 && (
+              <span className="block mt-1">
+                Les contacts déjà existants ont été ignorés et associés à la catégorie si spécifiée.
+              </span>
+            )}
           </div>
 
 
           {/* Détails des erreurs */}
-          {result.errors.length > 0 && (
+          {result.errors && result.errors.length > 0 && (
             <div className="border rounded-lg overflow-hidden">
               <div className="px-4 py-2 bg-muted font-medium text-sm">
-                Détails des erreurs
+                Détails des erreurs ({result.errors.length})
               </div>
-              <div className="max-h-48 overflow-y-auto">
-                <table className="w-full text-sm">
-                  <thead className="bg-muted/50">
-                    <tr>
-                      <th className="px-4 py-2 text-left">Ligne</th>
-                      <th className="px-4 py-2 text-left">Numéro</th>
-                      <th className="px-4 py-2 text-left">Erreur</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y">
-                    {result.errors.map((err, index) => (
-                      <tr key={index}>
-                        <td className="px-4 py-2">{err.row}</td>
-                        <td className="px-4 py-2 font-mono">{err.phone_number}</td>
-                        <td className="px-4 py-2 text-destructive">{err.error}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div className="max-h-48 overflow-y-auto p-4">
+                <ul className="space-y-1 text-sm">
+                  {result.errors.map((err, index) => (
+                    <li key={index} className="text-destructive">
+                      {err}
+                    </li>
+                  ))}
+                </ul>
               </div>
             </div>
           )}

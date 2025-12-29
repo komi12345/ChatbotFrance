@@ -83,6 +83,7 @@ class ContactImportResult(BaseModel):
     total: int
     success: int
     failed: int
+    skipped: int = 0  # Nombre de doublons ignorés
     errors: List[str] = []
 
 
