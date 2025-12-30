@@ -392,6 +392,45 @@ class SupabaseDB:
         categories_response = self.client.table("categories").select("*").in_("id", category_ids).execute()
         return categories_response.data or []
     
+    def get_contacts_categories_batch(self, contact_ids: List[int]) -> Dict[int, List[Dict]]:
+        """
+        Récupère les catégories de plusieurs contacts en une seule requête batch.
+        
+        Optimisation N+1: Au lieu de faire 2 requêtes par contact (100 requêtes pour 50 contacts),
+        cette méthode fait seulement 2 requêtes au total.
+        
+        Args:
+            contact_ids: Liste des IDs de contacts
+        
+        Returns:
+            Dict mapping contact_id -> liste de catégories
+        """
+        if not contact_ids:
+            return {}
+        
+        # 1. Récupérer toutes les associations contact-catégorie en une seule requête
+        response = self.client.table("category_contacts").select("contact_id, category_id").in_("contact_id", contact_ids).execute()
+        
+        if not response.data:
+            return {cid: [] for cid in contact_ids}
+        
+        # 2. Collecter tous les category_ids uniques
+        all_category_ids = list(set(r["category_id"] for r in response.data))
+        
+        # 3. Récupérer toutes les catégories en une seule requête
+        categories_response = self.client.table("categories").select("*").in_("id", all_category_ids).execute()
+        categories_map = {cat["id"]: cat for cat in (categories_response.data or [])}
+        
+        # 4. Construire le mapping contact_id -> catégories
+        result: Dict[int, List[Dict]] = {cid: [] for cid in contact_ids}
+        for row in response.data:
+            contact_id = row["contact_id"]
+            category_id = row["category_id"]
+            if contact_id in result and category_id in categories_map:
+                result[contact_id].append(categories_map[category_id])
+        
+        return result
+    
     def add_contact_to_category(self, contact_id: int, category_id: int) -> bool:
         """Ajoute un contact à une catégorie"""
         # Vérifier si l'association existe déjà

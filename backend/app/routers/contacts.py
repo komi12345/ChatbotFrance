@@ -73,6 +73,7 @@ async def list_contacts(
     - whatsapp_status: Filtrer par statut WhatsApp (all, verified, not_whatsapp, pending)
     
     Requirements: 4.1, 4.2
+    Optimisation N+1: Utilise get_contacts_categories_batch pour éviter 100+ requêtes
     """
     skip = (page - 1) * size
     
@@ -90,10 +91,14 @@ async def list_contacts(
     
     pages = (total + size - 1) // size if total > 0 else 1
     
-    # Ajouter les catégories pour chaque contact
+    # Optimisation N+1: Récupérer toutes les catégories en batch (2 requêtes au lieu de 100+)
+    contact_ids = [contact["id"] for contact in contacts]
+    categories_map = db.get_contacts_categories_batch(contact_ids) if contact_ids else {}
+    
+    # Construire la réponse avec les catégories pré-chargées
     items = []
     for contact in contacts:
-        categories = db.get_contact_categories(contact["id"])
+        categories = categories_map.get(contact["id"], [])
         items.append(contact_to_response(contact, categories))
     
     return {
