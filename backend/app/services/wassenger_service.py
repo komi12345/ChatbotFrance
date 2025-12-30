@@ -410,9 +410,8 @@ class WassengerService:
         """
         import asyncio
         
-        # Timeout très long pour la vérification WhatsApp (5 minutes = 300 secondes)
-        # car l'API Wassenger doit communiquer avec WhatsApp et peut être lente
-        VERIFICATION_TIMEOUT = 300.0
+        # Timeout pour la vérification WhatsApp (60 secondes)
+        VERIFICATION_TIMEOUT = 60.0
         
         # Créer un nouveau client pour chaque requête (évite event loop closed)
         client = self._get_client(timeout=VERIFICATION_TIMEOUT)
@@ -432,24 +431,37 @@ class WassengerService:
             )
             
             # Appeler l'API Wassenger pour vérifier l'existence
-            # Endpoint correct: POST /v1/numbers/exists avec body {"phone": "..."}
+            # Endpoint correct: POST /v1/numbers/exists avec body {"phone": "...", "device": "..."}
             # Requirements: 1.1
             response = await client.post(
                 f"{self.BASE_URL}/numbers/exists",
                 json={
-                    "phone": formatted_phone
+                    "phone": formatted_phone,
+                    "device": self.device_id  # Ajouter le device_id requis par l'API
                 }
             )
             
-            response_data = response.json()
+            # Logger la réponse brute pour debug
+            logger.debug(
+                f"Réponse Wassenger brute: status={response.status_code}, content={response.text[:500] if response.text else 'empty'}"
+            )
+            
+            # Parser la réponse JSON de manière sécurisée
+            response_data = {}
+            try:
+                if response.text and response.text.strip():
+                    response_data = response.json()
+            except Exception as json_err:
+                logger.warning(
+                    f"Impossible de parser la réponse JSON: {json_err}, content={response.text[:200] if response.text else 'empty'}"
+                )
             
             # Vérifier le succès de la requête
             # Status 200: numéro trouvé sur WhatsApp (exists=true)
             # Status 404: numéro NON trouvé sur WhatsApp (exists=false) - c'est un résultat valide!
-            if response.status_code == 200 or response.status_code == 404:
+            if response.status_code == 200:
                 # Extraire le résultat de la vérification
-                # L'API retourne exists=true (200) ou exists=false (404)
-                exists = response_data.get("exists", False)
+                exists = response_data.get("exists", True)  # Par défaut True si status 200
                 
                 logger.info(
                     f"Vérification WhatsApp terminée: {formatted_phone} -> exists={exists}",
@@ -462,6 +474,22 @@ class WassengerService:
                 
                 return WhatsAppExistsResponse(
                     exists=exists,
+                    phone=formatted_phone
+                )
+            
+            elif response.status_code == 404:
+                # 404 = numéro non trouvé sur WhatsApp
+                logger.info(
+                    f"Vérification WhatsApp terminée: {formatted_phone} -> exists=False (404)",
+                    extra={
+                        "phone": formatted_phone,
+                        "exists": False,
+                        "status_code": response.status_code
+                    }
+                )
+                
+                return WhatsAppExistsResponse(
+                    exists=False,
                     phone=formatted_phone
                 )
             
@@ -507,10 +535,10 @@ class WassengerService:
             # Gérer les autres erreurs API
             else:
                 error_code = response_data.get("error", "unknown_error")
-                error_message = response_data.get("message", "Erreur inconnue")
+                error_message = response_data.get("message", response.text[:200] if response.text else "Erreur inconnue")
                 
                 # Vérifier si c'est une erreur de format de numéro
-                if response.status_code == 400 or "invalid" in error_code.lower():
+                if response.status_code == 400 or "invalid" in str(error_code).lower() or "phone" in str(error_message).lower():
                     error_code = "invalid_phone_number"
                     error_details = self.get_error_details(error_code)
                     error_message = error_details["message"]
@@ -521,7 +549,8 @@ class WassengerService:
                         "phone": formatted_phone,
                         "error_code": error_code,
                         "error_message": error_message,
-                        "status_code": response.status_code
+                        "status_code": response.status_code,
+                        "response_text": response.text[:500] if response.text else "empty"
                     }
                 )
                 
