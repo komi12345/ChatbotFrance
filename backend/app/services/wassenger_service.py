@@ -393,7 +393,7 @@ class WassengerService:
             except Exception:
                 pass  # Ignorer les erreurs de fermeture
 
-    async def check_whatsapp_exists(self, phone: str, max_retries: int = 2) -> WhatsAppExistsResponse:
+    async def check_whatsapp_exists(self, phone: str, max_retries: int = 3) -> WhatsAppExistsResponse:
         """
         Vérifie si un numéro de téléphone est enregistré sur WhatsApp via Wassenger API.
         
@@ -408,7 +408,7 @@ class WassengerService:
         
         Args:
             phone: Numéro de téléphone à vérifier (avec ou sans +, avec ou sans espaces)
-            max_retries: Nombre maximum de tentatives en cas de timeout (défaut: 2)
+            max_retries: Nombre maximum de tentatives en cas d'erreur serveur (défaut: 3)
         
         Returns:
             WhatsAppExistsResponse avec le résultat de la vérification:
@@ -582,39 +582,20 @@ class WassengerService:
                     error_message=error_details["message"]
                 )
             
-            # Gérer les erreurs serveur 5xx (502, 503, 504) avec retry automatique
+            # Gérer les erreurs serveur 5xx (500, 502, 503, 504) avec retry automatique
+            # TOUTES les erreurs 5xx sont considérées comme temporaires et méritent un retry
             elif response.status_code >= 500:
                 # Détecter si c'est une réponse HTML (erreur proxy/serveur)
                 is_html_error = response.text and "<html" in response.text.lower()
                 
-                # 503 spécifique = session WhatsApp non connectée (si JSON)
-                if response.status_code == 503 and not is_html_error:
-                    error_details = self.get_error_details("device_not_connected")
-                    
-                    logger.error(
-                        f"Session WhatsApp non connectée lors de la vérification: {formatted_phone}",
-                        extra={
-                            "phone": formatted_phone,
-                            "status_code": response.status_code,
-                            "response_message": response_data.get("message", "")
-                        }
-                    )
-                    
-                    return WhatsAppExistsResponse(
-                        exists=False,
-                        phone=formatted_phone,
-                        error_code="device_not_connected",
-                        error_message=error_details["message"]
-                    )
-                
-                # Erreur serveur temporaire (502, 503 HTML, 504) - retry automatique
                 logger.warning(
                     f"Erreur serveur {response.status_code} lors de la vérification WhatsApp: {formatted_phone}",
                     extra={
                         "phone": formatted_phone,
                         "status_code": response.status_code,
                         "is_html_error": is_html_error,
-                        "max_retries": max_retries
+                        "max_retries": max_retries,
+                        "response_message": response_data.get("message", "")[:200] if response_data else ""
                     }
                 )
                 
@@ -624,18 +605,30 @@ class WassengerService:
                 except Exception:
                     pass
                 
-                # Retry si on a encore des tentatives
+                # Retry si on a encore des tentatives (TOUJOURS retry sur 5xx)
                 if max_retries > 0:
-                    logger.info(f"Retry vérification WhatsApp pour {formatted_phone} après erreur {response.status_code}, tentatives restantes: {max_retries}")
-                    await asyncio.sleep(5)  # Attendre 5 secondes avant retry (erreur serveur)
+                    wait_time = 10  # Attendre 10 secondes pour les erreurs serveur
+                    logger.info(f"Retry vérification WhatsApp pour {formatted_phone} après erreur {response.status_code}, attente {wait_time}s, tentatives restantes: {max_retries}")
+                    await asyncio.sleep(wait_time)
                     return await self.check_whatsapp_exists(phone, max_retries - 1)
                 
-                # Plus de tentatives - retourner erreur
+                # Plus de tentatives - retourner erreur appropriée
+                # Si c'est un 503 JSON, c'est probablement un problème de session
+                if response.status_code == 503 and not is_html_error:
+                    error_details = self.get_error_details("device_not_connected")
+                    return WhatsAppExistsResponse(
+                        exists=False,
+                        phone=formatted_phone,
+                        error_code="device_not_connected",
+                        error_message=error_details["message"]
+                    )
+                
+                # Sinon, erreur serveur générique
                 return WhatsAppExistsResponse(
                     exists=False,
                     phone=formatted_phone,
                     error_code="server_error",
-                    error_message=f"Erreur serveur Wassenger ({response.status_code}). Veuillez réessayer dans quelques instants."
+                    error_message=f"Erreur serveur Wassenger ({response.status_code}) après plusieurs tentatives. Veuillez réessayer plus tard."
                 )
             
             # Gérer les autres erreurs API (4xx)
