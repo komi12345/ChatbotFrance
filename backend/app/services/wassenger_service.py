@@ -431,6 +431,33 @@ class WassengerService:
         # Formater le numéro au format E164 avec + (selon documentation Wassenger)
         # D'abord nettoyer le numéro (retirer espaces, tirets, etc.)
         clean_phone = self.format_phone_number(phone)  # Retire tous les caractères non numériques
+        
+        # Validation du numéro avant d'appeler l'API
+        # Un numéro E164 valide doit avoir entre 8 et 15 chiffres
+        if len(clean_phone) < 8:
+            logger.error(
+                f"Numéro trop court pour vérification WhatsApp: {phone} -> {clean_phone} ({len(clean_phone)} chiffres)",
+                extra={"phone": phone, "clean_phone": clean_phone, "length": len(clean_phone)}
+            )
+            return WhatsAppExistsResponse(
+                exists=False,
+                phone=phone,
+                error_code="invalid_phone_number",
+                error_message=f"Le numéro est trop court ({len(clean_phone)} chiffres). Un numéro valide doit avoir au moins 8 chiffres."
+            )
+        
+        if len(clean_phone) > 15:
+            logger.error(
+                f"Numéro trop long pour vérification WhatsApp: {phone} -> {clean_phone} ({len(clean_phone)} chiffres)",
+                extra={"phone": phone, "clean_phone": clean_phone, "length": len(clean_phone)}
+            )
+            return WhatsAppExistsResponse(
+                exists=False,
+                phone=phone,
+                error_code="invalid_phone_number",
+                error_message=f"Le numéro est trop long ({len(clean_phone)} chiffres). Un numéro valide ne doit pas dépasser 15 chiffres."
+            )
+        
         # Toujours ajouter le + au début
         formatted_phone = f"+{clean_phone}"
         
@@ -447,7 +474,7 @@ class WassengerService:
             
             # Appeler l'API Wassenger pour vérifier l'existence
             # Endpoint: POST /v1/numbers/exists avec body {"phone": "+..."}
-            # NOTE: Pas de "device" dans le body selon la documentation officielle
+            # NOTE: L'API n'accepte PAS de "device" dans le body (erreur 400 si présent)
             # Requirements: 1.1
             request_body = {
                 "phone": formatted_phone
@@ -551,21 +578,45 @@ class WassengerService:
                     error_message=error_details["message"]
                 )
             
+            # Gérer les erreurs de session non connectée (503)
+            elif response.status_code == 503:
+                error_details = self.get_error_details("device_not_connected")
+                
+                logger.error(
+                    f"Session WhatsApp non connectée lors de la vérification: {formatted_phone}",
+                    extra={
+                        "phone": formatted_phone,
+                        "status_code": response.status_code,
+                        "response_message": response_data.get("message", "")
+                    }
+                )
+                
+                return WhatsAppExistsResponse(
+                    exists=False,
+                    phone=formatted_phone,
+                    error_code="device_not_connected",
+                    error_message=error_details["message"]
+                )
+            
             # Gérer les autres erreurs API
             else:
-                error_code = response_data.get("error", "unknown_error")
+                error_code = response_data.get("errorCode", response_data.get("error", "unknown_error"))
                 error_message = response_data.get("message", response.text[:200] if response.text else "Erreur inconnue")
                 
-                # Vérifier si c'est une erreur de format de numéro
-                if response.status_code == 400 or "invalid" in str(error_code).lower() or "phone" in str(error_message).lower():
+                # Vérifier si c'est une erreur de format de numéro (400 avec message spécifique)
+                if response.status_code == 400 and ("invalid" in str(error_message).lower() or "phone" in str(error_message).lower()):
                     error_code = "invalid_phone_number"
                     error_details = self.get_error_details(error_code)
-                    error_message = error_details["message"]
+                    # Ajouter des détails sur le numéro problématique
+                    error_message = f"{error_details['message']} Numéro reçu: '{phone}' -> formaté: '{formatted_phone}' ({len(clean_phone)} chiffres)"
                 
                 logger.error(
                     f"Erreur API Wassenger lors de la vérification: {error_code}",
                     extra={
-                        "phone": formatted_phone,
+                        "original_phone": phone,
+                        "clean_phone": clean_phone,
+                        "formatted_phone": formatted_phone,
+                        "phone_length": len(clean_phone),
                         "error_code": error_code,
                         "error_message": error_message,
                         "status_code": response.status_code,
