@@ -358,6 +358,9 @@ async def add_contacts_to_category(
     """
     Ajoute des contacts à une catégorie (accessible à tout utilisateur authentifié).
     
+    Performance: Utilise un batch insert pour ajouter plusieurs contacts en 3 requêtes
+    au lieu de 3 requêtes par contact.
+    
     Invalidation du cache après ajout de contacts.
     
     Requirements: 
@@ -372,20 +375,23 @@ async def add_contacts_to_category(
             detail="Catégorie non trouvée"
         )
     
-    # Vérifier que tous les contacts existent (recherche globale)
-    for contact_id in request.contact_ids:
-        contact = db.get_contact_by_id(contact_id)
-        if not contact:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Contact {contact_id} non trouvé"
-            )
-        db.add_contact_to_category(contact_id, category_id)
+    # Utiliser le batch insert optimisé (3 requêtes au total au lieu de 3*N)
+    result = db.add_contacts_to_category_batch(request.contact_ids, category_id)
+    
+    # Si des contacts n'ont pas été trouvés, lever une erreur
+    if result["not_found"]:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Contacts non trouvés: {result['not_found']}"
+        )
     
     # Récupérer les contacts mis à jour (tous les contacts de la catégorie)
     contacts = db.get_contacts_by_category(category_id)
     
-    logger.info(f"{len(request.contact_ids)} contact(s) ajouté(s) à la catégorie {category['name']} (ID: {category_id})")
+    logger.info(
+        f"{result['added']} contact(s) ajouté(s) à la catégorie {category['name']} (ID: {category_id}), "
+        f"{result['already_in_category']} déjà présent(s)"
+    )
     
     # Invalider le cache de cette catégorie (comptage et détails)
     invalidate_cache_on_category_change(category_id)

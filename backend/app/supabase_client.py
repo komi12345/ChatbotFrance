@@ -444,6 +444,65 @@ class SupabaseDB:
         
         return True
     
+    def add_contacts_to_category_batch(self, contact_ids: List[int], category_id: int) -> Dict:
+        """
+        Ajoute plusieurs contacts à une catégorie en batch (optimisé pour les gros volumes).
+        
+        Performance: 
+        - 1 requête pour vérifier les contacts existants
+        - 1 requête pour vérifier les associations existantes
+        - 1 requête pour insérer les nouvelles associations
+        
+        Au lieu de 3 requêtes par contact (N*3 requêtes), on fait 3 requêtes au total.
+        
+        Args:
+            contact_ids: Liste des IDs de contacts à ajouter
+            category_id: ID de la catégorie
+            
+        Returns:
+            Dict avec:
+            - added: nombre de contacts ajoutés
+            - already_in_category: nombre de contacts déjà dans la catégorie
+            - not_found: liste des IDs de contacts non trouvés
+        """
+        if not contact_ids:
+            return {"added": 0, "already_in_category": 0, "not_found": []}
+        
+        # 1. Vérifier quels contacts existent (une seule requête)
+        existing_contacts = self.client.table("contacts").select("id").in_("id", contact_ids).execute()
+        existing_contact_ids = set(r["id"] for r in (existing_contacts.data or []))
+        not_found = [cid for cid in contact_ids if cid not in existing_contact_ids]
+        
+        # Filtrer pour ne garder que les contacts existants
+        valid_contact_ids = [cid for cid in contact_ids if cid in existing_contact_ids]
+        
+        if not valid_contact_ids:
+            return {"added": 0, "already_in_category": 0, "not_found": not_found}
+        
+        # 2. Vérifier quels contacts sont déjà dans la catégorie (une seule requête)
+        existing_associations = self.client.table("category_contacts").select("contact_id").eq("category_id", category_id).in_("contact_id", valid_contact_ids).execute()
+        already_in_category_ids = set(r["contact_id"] for r in (existing_associations.data or []))
+        
+        # Filtrer pour ne garder que les contacts à ajouter
+        contacts_to_add = [cid for cid in valid_contact_ids if cid not in already_in_category_ids]
+        
+        if not contacts_to_add:
+            return {
+                "added": 0, 
+                "already_in_category": len(already_in_category_ids), 
+                "not_found": not_found
+            }
+        
+        # 3. Insérer toutes les nouvelles associations en batch (une seule requête)
+        associations = [{"contact_id": cid, "category_id": category_id} for cid in contacts_to_add]
+        self.client.table("category_contacts").insert(associations).execute()
+        
+        return {
+            "added": len(contacts_to_add),
+            "already_in_category": len(already_in_category_ids),
+            "not_found": not_found
+        }
+    
     def remove_contact_from_category(self, contact_id: int, category_id: int) -> bool:
         """Retire un contact d'une catégorie"""
         self.client.table("category_contacts").delete().eq("contact_id", contact_id).eq("category_id", category_id).execute()
