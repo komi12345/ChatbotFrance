@@ -478,6 +478,9 @@ class SupabaseDB:
         Récupère les contacts qui ne sont PAS dans une catégorie donnée.
         Avec pagination et recherche côté serveur.
         
+        OPTIMISATION 2025: Pour les grandes bases (100k+ contacts), utilise une approche
+        par exclusion directe avec le filtre Supabase `not.in` quand possible.
+        
         Args:
             category_id: ID de la catégorie à exclure
             skip: Nombre d'éléments à sauter (pagination)
@@ -490,38 +493,78 @@ class SupabaseDB:
         # 1. Récupérer les IDs des contacts déjà dans cette catégorie
         existing_response = self.client.table("category_contacts").select("contact_id").eq("category_id", category_id).execute()
         existing_contact_ids = [r["contact_id"] for r in (existing_response.data or [])]
+        existing_contact_ids_set = set(existing_contact_ids)  # Pour recherche O(1)
         
-        # 2. Récupérer tous les contacts qui ne sont PAS dans cette liste
-        query = self.client.table("contacts").select("*", count="exact")
+        # 2. Stratégie selon le nombre de contacts dans la catégorie
+        # Supabase supporte `not.in` mais avec une limite de ~1000 IDs dans l'URL
+        # Si moins de 500 contacts dans la catégorie, on peut utiliser not.in directement
         
-        # Exclure les contacts déjà dans la catégorie
-        if existing_contact_ids:
-            # Supabase ne supporte pas directement "NOT IN", on utilise une approche différente
-            # On récupère tous les contacts et on filtre côté serveur
-            # Pour une meilleure performance avec beaucoup de contacts, on pourrait utiliser une RPC
-            pass
+        if len(existing_contact_ids) <= 500 and existing_contact_ids:
+            # Approche optimisée: filtrage côté DB avec not.in
+            query = self.client.table("contacts").select("*", count="exact")
+            
+            # Exclure les contacts déjà dans la catégorie
+            # Format: not.in.(id1,id2,id3)
+            ids_str = ",".join(str(id) for id in existing_contact_ids)
+            query = query.filter("id", "not.in", f"({ids_str})")
+            
+            # Appliquer la recherche si présente
+            if search:
+                query = query.or_(f"full_number.ilike.%{search}%,first_name.ilike.%{search}%,last_name.ilike.%{search}%")
+            
+            # Pagination côté DB
+            response = query.order("created_at", desc=True).range(skip, skip + limit - 1).execute()
+            
+            return response.data or [], response.count or 0
         
-        # Appliquer la recherche si présente
-        if search:
-            query = query.or_(f"full_number.ilike.%{search}%,first_name.ilike.%{search}%,last_name.ilike.%{search}%")
-        
-        # Exécuter la requête
-        response = query.order("created_at", desc=True).execute()
-        all_contacts = response.data or []
-        
-        # Filtrer les contacts qui sont déjà dans la catégorie
-        if existing_contact_ids:
-            filtered_contacts = [c for c in all_contacts if c["id"] not in existing_contact_ids]
         else:
-            filtered_contacts = all_contacts
-        
-        # Calculer le total après filtrage
-        total = len(filtered_contacts)
-        
-        # Appliquer la pagination
-        paginated_contacts = filtered_contacts[skip:skip + limit]
-        
-        return paginated_contacts, total
+            # Approche pour grandes catégories: pagination avec filtrage côté serveur
+            # On récupère par lots pour éviter de charger 100k contacts en mémoire
+            
+            # Compter d'abord le total de contacts (avec recherche si applicable)
+            count_query = self.client.table("contacts").select("id", count="exact")
+            if search:
+                count_query = count_query.or_(f"full_number.ilike.%{search}%,first_name.ilike.%{search}%,last_name.ilike.%{search}%")
+            count_response = count_query.execute()
+            total_contacts = count_response.count or 0
+            
+            # Estimation du total disponible (approximation)
+            estimated_available = total_contacts - len(existing_contact_ids)
+            
+            # Récupérer les contacts par lots jusqu'à avoir assez pour la page demandée
+            # On doit récupérer skip + limit contacts valides
+            needed = skip + limit
+            batch_size = 1000  # Taille du lot
+            collected = []
+            db_offset = 0
+            
+            while len(collected) < needed and db_offset < total_contacts:
+                query = self.client.table("contacts").select("*")
+                
+                if search:
+                    query = query.or_(f"full_number.ilike.%{search}%,first_name.ilike.%{search}%,last_name.ilike.%{search}%")
+                
+                response = query.order("created_at", desc=True).range(db_offset, db_offset + batch_size - 1).execute()
+                batch = response.data or []
+                
+                if not batch:
+                    break
+                
+                # Filtrer les contacts déjà dans la catégorie
+                for contact in batch:
+                    if contact["id"] not in existing_contact_ids_set:
+                        collected.append(contact)
+                        if len(collected) >= needed:
+                            break
+                
+                db_offset += batch_size
+            
+            # Appliquer la pagination sur les résultats collectés
+            paginated_contacts = collected[skip:skip + limit]
+            
+            # Le total est approximatif pour les grandes bases
+            # On retourne le nombre estimé de contacts disponibles
+            return paginated_contacts, max(estimated_available, len(collected))
     
     # ==================== CAMPAIGNS ====================
     
