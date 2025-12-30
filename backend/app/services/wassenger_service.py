@@ -394,7 +394,7 @@ class WassengerService:
         Vérifie si un numéro de téléphone est enregistré sur WhatsApp via Wassenger API.
         
         Endpoint: POST /v1/numbers/exists
-        Body: {"phone": "+22892146653"}  # Format E164 avec +
+        Body: {"phone": "22892146653", "device": "device_id"}  # Format SANS + (comme send_message)
         
         Args:
             phone: Numéro de téléphone à vérifier (avec ou sans +, avec ou sans espaces)
@@ -416,10 +416,9 @@ class WassengerService:
         # Créer un nouveau client pour chaque requête (évite event loop closed)
         client = self._get_client(timeout=VERIFICATION_TIMEOUT)
         
-        # Formater le numéro au format E164 avec + pour l'API /numbers/exists
-        # L'API Wassenger /numbers/exists requiert le format E164 complet avec +
-        clean_phone = self.format_phone_number(phone)  # Retire tous les caractères non numériques
-        formatted_phone = f"+{clean_phone}" if clean_phone and not clean_phone.startswith('+') else clean_phone
+        # Formater le numéro au format Wassenger (SANS +, uniquement les chiffres)
+        # Même format que send_message qui fonctionne correctement
+        formatted_phone = self.format_phone_number(phone)  # Retire tous les caractères non numériques (y compris +)
         
         try:
             logger.info(
