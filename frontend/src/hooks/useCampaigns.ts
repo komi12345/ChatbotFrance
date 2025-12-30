@@ -96,9 +96,22 @@ export function useCreateCampaign() {
       const response = await api.post<Campaign>("/campaigns", data);
       return response.data;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: campaignKeys.lists() });
-      queryClient.invalidateQueries({ queryKey: ["stats"] });
+    onSuccess: async (newCampaign) => {
+      // Ajouter immédiatement au cache pour mise à jour optimiste
+      queryClient.setQueriesData(
+        { queryKey: campaignKeys.lists() },
+        (oldData: PaginatedResponse<Campaign> | undefined) => {
+          if (!oldData) return oldData;
+          return {
+            ...oldData,
+            items: [newCampaign, ...oldData.items],
+            total: oldData.total + 1,
+          };
+        }
+      );
+      // Invalider aussi pour s'assurer de la cohérence
+      await queryClient.invalidateQueries({ queryKey: campaignKeys.lists() });
+      await queryClient.invalidateQueries({ queryKey: ["stats"] });
     },
   });
 }
@@ -136,9 +149,22 @@ export function useDeleteCampaign() {
       await api.delete(`/campaigns/${id}`);
       return id;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: campaignKeys.lists() });
-      queryClient.invalidateQueries({ queryKey: ["stats"] });
+    onSuccess: async (deletedId) => {
+      // Supprimer immédiatement du cache pour mise à jour optimiste
+      queryClient.setQueriesData(
+        { queryKey: campaignKeys.lists() },
+        (oldData: PaginatedResponse<Campaign> | undefined) => {
+          if (!oldData) return oldData;
+          return {
+            ...oldData,
+            items: oldData.items.filter((c) => c.id !== deletedId),
+            total: oldData.total - 1,
+          };
+        }
+      );
+      // Invalider aussi pour s'assurer de la cohérence
+      await queryClient.invalidateQueries({ queryKey: campaignKeys.lists() });
+      await queryClient.invalidateQueries({ queryKey: ["stats"] });
     },
   });
 }
@@ -216,9 +242,22 @@ export function useForceDeleteCampaign() {
       await api.delete(`/campaigns/${id}?force=${force}`);
       return id;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: campaignKeys.lists() });
-      queryClient.invalidateQueries({ queryKey: ["stats"] });
+    onSuccess: async (deletedId) => {
+      // Supprimer immédiatement du cache pour mise à jour optimiste
+      queryClient.setQueriesData(
+        { queryKey: campaignKeys.lists() },
+        (oldData: PaginatedResponse<Campaign> | undefined) => {
+          if (!oldData) return oldData;
+          return {
+            ...oldData,
+            items: oldData.items.filter((c) => c.id !== deletedId),
+            total: oldData.total - 1,
+          };
+        }
+      );
+      // Invalider aussi pour s'assurer de la cohérence
+      await queryClient.invalidateQueries({ queryKey: campaignKeys.lists() });
+      await queryClient.invalidateQueries({ queryKey: ["stats"] });
     },
   });
 }

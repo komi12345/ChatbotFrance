@@ -162,6 +162,13 @@ celery_app.conf.update(
             "schedule": timedelta(hours=6),
             "options": {"queue": "default"},
         },
+        # Tâche de vérification périodique des campagnes en cours
+        # Requirements: 2.1, 2.2 - Exécutée toutes les 2 minutes
+        "check-sending-campaigns": {
+            "task": "app.tasks.celery_app.check_sending_campaigns",
+            "schedule": timedelta(minutes=2),
+            "options": {"queue": "default"},
+        },
     },
     
     # Configuration pour le scheduler crontab
@@ -932,4 +939,75 @@ def check_campaign_timeout_48h():
         
     except Exception as e:
         logger.error(f"Erreur lors de la vérification du timeout 48h: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@celery_app.task(name="app.tasks.celery_app.check_sending_campaigns")
+def check_sending_campaigns():
+    """
+    Tâche périodique de vérification des campagnes en cours d'envoi.
+    
+    Exécutée toutes les 2 minutes pour:
+    1. Récupérer toutes les campagnes en statut "sending"
+    2. Pour chaque campagne, déclencher update_campaign_status pour vérifier
+       si elle doit être marquée comme "completed"
+    
+    Cette tâche est un filet de sécurité en cas de webhook manqué ou
+    de problème lors de l'envoi du Message 2.
+    
+    Requirements: 2.1, 2.2
+    """
+    try:
+        from app.supabase_client import get_supabase_client
+        from app.tasks.message_tasks import update_campaign_status
+        
+        logger.info("Démarrage de la vérification périodique des campagnes en cours")
+        
+        client = get_supabase_client()
+        
+        # Récupérer toutes les campagnes en statut "sending"
+        campaigns_response = client.table("campaigns").select(
+            "id, name"
+        ).eq(
+            "status", "sending"
+        ).execute()
+        
+        sending_campaigns = campaigns_response.data or []
+        
+        logger.info(f"Trouvé {len(sending_campaigns)} campagne(s) en statut 'sending'")
+        
+        triggered_count = 0
+        
+        for campaign in sending_campaigns:
+            campaign_id = campaign["id"]
+            campaign_name = campaign["name"]
+            
+            try:
+                # Déclencher la vérification du statut de la campagne
+                update_campaign_status.delay(campaign_id)
+                triggered_count += 1
+                
+                logger.debug(
+                    f"Vérification déclenchée pour campagne {campaign_id} ({campaign_name})"
+                )
+                
+            except Exception as e:
+                logger.error(
+                    f"Erreur lors du déclenchement de la vérification "
+                    f"pour campagne {campaign_id}: {e}"
+                )
+        
+        logger.info(
+            f"Vérification périodique terminée: {triggered_count} vérification(s) "
+            f"déclenchée(s) sur {len(sending_campaigns)} campagne(s) en cours"
+        )
+        
+        return {
+            "status": "success",
+            "sending_campaigns": len(sending_campaigns),
+            "triggered_count": triggered_count
+        }
+        
+    except Exception as e:
+        logger.error(f"Erreur lors de la vérification périodique des campagnes: {e}")
         return {"status": "error", "message": str(e)}
