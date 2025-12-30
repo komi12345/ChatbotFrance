@@ -121,6 +121,10 @@ WASSENGER_ERROR_MESSAGES: Dict[str, str] = {
         "Crédits insuffisants sur votre compte Wassenger. "
         "Veuillez recharger votre compte."
     ),
+    "server_error": (
+        "Erreur temporaire du serveur Wassenger. "
+        "Veuillez réessayer dans quelques instants."
+    ),
 }
 
 # Instructions détaillées pour la reconnexion de l'appareil
@@ -578,27 +582,63 @@ class WassengerService:
                     error_message=error_details["message"]
                 )
             
-            # Gérer les erreurs de session non connectée (503)
-            elif response.status_code == 503:
-                error_details = self.get_error_details("device_not_connected")
+            # Gérer les erreurs serveur 5xx (502, 503, 504) avec retry automatique
+            elif response.status_code >= 500:
+                # Détecter si c'est une réponse HTML (erreur proxy/serveur)
+                is_html_error = response.text and "<html" in response.text.lower()
                 
-                logger.error(
-                    f"Session WhatsApp non connectée lors de la vérification: {formatted_phone}",
+                # 503 spécifique = session WhatsApp non connectée (si JSON)
+                if response.status_code == 503 and not is_html_error:
+                    error_details = self.get_error_details("device_not_connected")
+                    
+                    logger.error(
+                        f"Session WhatsApp non connectée lors de la vérification: {formatted_phone}",
+                        extra={
+                            "phone": formatted_phone,
+                            "status_code": response.status_code,
+                            "response_message": response_data.get("message", "")
+                        }
+                    )
+                    
+                    return WhatsAppExistsResponse(
+                        exists=False,
+                        phone=formatted_phone,
+                        error_code="device_not_connected",
+                        error_message=error_details["message"]
+                    )
+                
+                # Erreur serveur temporaire (502, 503 HTML, 504) - retry automatique
+                logger.warning(
+                    f"Erreur serveur {response.status_code} lors de la vérification WhatsApp: {formatted_phone}",
                     extra={
                         "phone": formatted_phone,
                         "status_code": response.status_code,
-                        "response_message": response_data.get("message", "")
+                        "is_html_error": is_html_error,
+                        "max_retries": max_retries
                     }
                 )
                 
+                # Fermer le client actuel
+                try:
+                    await client.aclose()
+                except Exception:
+                    pass
+                
+                # Retry si on a encore des tentatives
+                if max_retries > 0:
+                    logger.info(f"Retry vérification WhatsApp pour {formatted_phone} après erreur {response.status_code}, tentatives restantes: {max_retries}")
+                    await asyncio.sleep(5)  # Attendre 5 secondes avant retry (erreur serveur)
+                    return await self.check_whatsapp_exists(phone, max_retries - 1)
+                
+                # Plus de tentatives - retourner erreur
                 return WhatsAppExistsResponse(
                     exists=False,
                     phone=formatted_phone,
-                    error_code="device_not_connected",
-                    error_message=error_details["message"]
+                    error_code="server_error",
+                    error_message=f"Erreur serveur Wassenger ({response.status_code}). Veuillez réessayer dans quelques instants."
                 )
             
-            # Gérer les autres erreurs API
+            # Gérer les autres erreurs API (4xx)
             else:
                 error_code = response_data.get("errorCode", response_data.get("error", "unknown_error"))
                 error_message = response_data.get("message", response.text[:200] if response.text else "Erreur inconnue")
