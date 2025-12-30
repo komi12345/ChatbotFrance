@@ -449,7 +449,7 @@ async def remove_contact_from_category(
 async def get_available_contacts_for_category(
     category_id: int,
     page: int = Query(1, ge=1, description="Numéro de page"),
-    size: int = Query(50, ge=1, le=100, description="Nombre d'éléments par page"),
+    size: int = Query(50, ge=1, le=500, description="Nombre d'éléments par page (max 500)"),
     search: Optional[str] = Query(None, description="Recherche par nom ou numéro"),
     db: SupabaseDB = Depends(get_supabase_db),
     current_user: Dict = Depends(get_current_user)

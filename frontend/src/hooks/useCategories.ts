@@ -71,16 +71,16 @@ export function useCategory(id: number) {
  */
 export function useAvailableContactsForCategory(
   categoryId: number,
-  params: { page?: number; search?: string } = {}
+  params: { page?: number; search?: string; size?: number } = {}
 ) {
-  const { page = 1, search = "" } = params;
+  const { page = 1, search = "", size = 100 } = params;
 
   return useQuery({
-    queryKey: [...categoryKeys.detail(categoryId), "available-contacts", { page, search }],
+    queryKey: [...categoryKeys.detail(categoryId), "available-contacts", { page, search, size }],
     queryFn: async () => {
       const searchParams = new URLSearchParams();
       searchParams.append("page", page.toString());
-      searchParams.append("size", "50");
+      searchParams.append("size", size.toString());
       if (search) {
         searchParams.append("search", search);
       }

@@ -59,6 +59,7 @@ export default function CategoryDetailPage() {
   const [contactSearchQuery, setContactSearchQuery] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [availableContactsPage, setAvailableContactsPage] = useState(1);
+  const [contactsPerPage, setContactsPerPage] = useState(100); // Augmenté à 100 par défaut
 
   // Debounce la recherche pour éviter trop de requêtes
   useEffect(() => {
@@ -74,7 +75,7 @@ export default function CategoryDetailPage() {
   // Utiliser le nouvel endpoint pour récupérer les contacts disponibles (non présents dans la catégorie)
   const { data: availableContactsData, isLoading: isLoadingContacts } = useAvailableContactsForCategory(
     categoryId,
-    { page: availableContactsPage, search: debouncedSearch }
+    { page: availableContactsPage, search: debouncedSearch, size: contactsPerPage }
   );
   const updateMutation = useUpdateCategory();
   const deleteMutation = useDeleteCategory();
@@ -354,6 +355,7 @@ export default function CategoryDetailPage() {
           setContactSearchQuery("");
           setSelectedContactIds([]);
           setAvailableContactsPage(1);
+          setContactsPerPage(100);
         }
       }}>
         <DialogContent className="max-w-lg max-h-[80vh] overflow-hidden flex flex-col">
@@ -373,10 +375,49 @@ export default function CategoryDetailPage() {
           </div>
           
           {/* Compteur de contacts disponibles */}
-          <p className="text-sm text-muted-foreground">
-            {totalAvailableContacts} contact(s) disponible(s)
-            {selectedContactIds.length > 0 && ` • ${selectedContactIds.length} sélectionné(s)`}
-          </p>
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-muted-foreground">
+              {totalAvailableContacts} contact(s) disponible(s)
+              {selectedContactIds.length > 0 && ` • ${selectedContactIds.length} sélectionné(s)`}
+            </p>
+            <div className="flex items-center gap-2">
+              <select
+                value={contactsPerPage}
+                onChange={(e) => {
+                  setContactsPerPage(Number(e.target.value));
+                  setAvailableContactsPage(1);
+                }}
+                className="text-sm border rounded px-2 py-1"
+              >
+                <option value={50}>50 / page</option>
+                <option value={100}>100 / page</option>
+                <option value={200}>200 / page</option>
+                <option value={500}>500 / page</option>
+              </select>
+              {availableContacts.length > 0 && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    const allIds = availableContacts.map((c: Contact) => c.id);
+                    const allSelected = allIds.every((id: number) => selectedContactIds.includes(id));
+                    if (allSelected) {
+                      // Désélectionner tous les contacts de cette page
+                      setSelectedContactIds(selectedContactIds.filter((id) => !allIds.includes(id)));
+                    } else {
+                      // Sélectionner tous les contacts de cette page
+                      const newIds = allIds.filter((id: number) => !selectedContactIds.includes(id));
+                      setSelectedContactIds([...selectedContactIds, ...newIds]);
+                    }
+                  }}
+                >
+                  {availableContacts.every((c: Contact) => selectedContactIds.includes(c.id))
+                    ? "Désélectionner page"
+                    : "Sélectionner page"}
+                </Button>
+              )}
+            </div>
+          </div>
           
           <div className="flex-1 overflow-y-auto min-h-[200px]">
             {isLoadingContacts ? (
@@ -474,6 +515,7 @@ export default function CategoryDetailPage() {
                 setSelectedContactIds([]);
                 setContactSearchQuery("");
                 setAvailableContactsPage(1);
+                setContactsPerPage(100);
               }}
             >
               Annuler
