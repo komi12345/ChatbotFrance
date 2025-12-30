@@ -394,12 +394,13 @@ class WassengerService:
         Vérifie si un numéro de téléphone est enregistré sur WhatsApp via Wassenger API.
         
         Endpoint: POST /v1/numbers/exists
-        Body: {"phone": "+22892146653", "device": "device_id"}  # Format E164 AVEC + selon doc Wassenger
+        Body: {"phone": "+22892146653"}  # Format E164 AVEC + selon doc Wassenger
         
         Documentation officielle Wassenger:
         https://wassenger.com/blog/how-to-verify-a-whatsapp-number-exists
-        "phone number with the international country prefix, with only digits, no spaces and no symbols"
-        Exemples: +14155552671, +442071838750, +551155256325
+        - Format: E164 avec + (ex: +14155552671)
+        - Body: {"phone": "+14158586273"} - PAS de device dans le body
+        - Auth: via query param ?token=API_KEY ou header Token: API_KEY
         
         Args:
             phone: Numéro de téléphone à vérifier (avec ou sans +, avec ou sans espaces)
@@ -418,14 +419,20 @@ class WassengerService:
         # Timeout pour la vérification WhatsApp (60 secondes)
         VERIFICATION_TIMEOUT = 60.0
         
-        # Créer un nouveau client pour chaque requête (évite event loop closed)
-        client = self._get_client(timeout=VERIFICATION_TIMEOUT)
+        # Créer un client HTTP avec le header Token (format Wassenger)
+        client = httpx.AsyncClient(
+            headers={
+                "Token": self.api_key,  # Wassenger utilise "Token" pas "Authorization: Bearer"
+                "Content-Type": "application/json"
+            },
+            timeout=VERIFICATION_TIMEOUT
+        )
         
         # Formater le numéro au format E164 avec + (selon documentation Wassenger)
         # D'abord nettoyer le numéro (retirer espaces, tirets, etc.)
         clean_phone = self.format_phone_number(phone)  # Retire tous les caractères non numériques
-        # Ajouter le + si pas déjà présent
-        formatted_phone = f"+{clean_phone}" if clean_phone and not phone.strip().startswith('+') else f"+{clean_phone}"
+        # Toujours ajouter le + au début
+        formatted_phone = f"+{clean_phone}"
         
         try:
             logger.info(
@@ -439,14 +446,14 @@ class WassengerService:
             )
             
             # Appeler l'API Wassenger pour vérifier l'existence
-            # Endpoint correct: POST /v1/numbers/exists avec body {"phone": "+...", "device": "..."}
+            # Endpoint: POST /v1/numbers/exists avec body {"phone": "+..."}
+            # NOTE: Pas de "device" dans le body selon la documentation officielle
             # Requirements: 1.1
             request_body = {
-                "phone": formatted_phone,
-                "device": self.device_id
+                "phone": formatted_phone
             }
             
-            logger.info(f"Wassenger API request body: {request_body}")
+            logger.info(f"Wassenger API request: POST /v1/numbers/exists, body={request_body}, headers=Token: {self.api_key[:12]}...")
             
             response = await client.post(
                 f"{self.BASE_URL}/numbers/exists",
