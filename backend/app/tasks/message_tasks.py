@@ -17,10 +17,35 @@ ROBUSTESSE 2025:
 - Idempotence des tâches (réexécution sûre)
 - Validation des données avant traitement
 - Timeouts et circuit breakers
+
+SYSTÈME ANTI-BAN 2025:
+Ce module implémente une stratégie anti-ban complète pour éviter les bannissements WhatsApp.
+Documentation complète: .kiro/specs/whatsapp-ban-prevention/design.md
+
+Fonctions anti-ban principales:
+- get_anti_ban_delay(): Calcule le délai avec randomisation (Requirements 1.1-1.6)
+- get_warm_up_delay(): Délai adaptatif selon messages/jour (Requirements 2.1-2.5)
+- should_take_strategic_pause(): Vérifie si pause requise (Requirements 3.1-3.4)
+- get_strategic_pause_duration(): Durée de pause aléatoire (Requirements 3.1-3.5)
+- simulate_human_behavior(): Micro-pauses aléatoires (Requirements 4.1)
+- is_night_time(): Blocage heures de nuit (Requirements 4.2)
+- get_message_length_delay(): Délai basé sur longueur (Requirements 4.3)
+- detect_ban_risk(): Détection codes d'erreur dangereux (Requirements 5.1)
+- check_error_thresholds(): Vérification seuils d'erreur (Requirements 5.2, 5.3, 5.5)
+- is_safe_to_send(): Vérification globale avant envoi (Requirements 4.2, 5.2, 5.3, 6.1)
+
+Variables d'environnement anti-ban (voir .env.example):
+- ANTI_BAN_BASE_DELAY_MIN: Délai minimum de base (défaut: 15s)
+- ANTI_BAN_BASE_DELAY_MAX: Délai maximum de base (défaut: 30s)
+- ANTI_BAN_RANDOM_VARIATION: Variation aléatoire ±X secondes (défaut: 5s)
+- ANTI_BAN_MIN_DELAY: Plancher absolu (défaut: 10s)
+- ANTI_BAN_BATCH_SIZE: Taille des lots (défaut: 20)
 """
 import logging
 import asyncio
 import time
+import os
+import random
 from datetime import datetime
 from typing import Optional, List
 from celery.exceptions import MaxRetriesExceededError, SoftTimeLimitExceeded
@@ -63,6 +88,111 @@ MESSAGE_2_DELAY_SECONDS = 24 * 60 * 60  # 86400 secondes = 24h
 _last_send_timestamp: float = 0.0
 
 # ==========================================================================
+# CONFIGURATION ANTI-BAN 2025 - PROTECTION MAXIMALE
+# ==========================================================================
+# Ce système implémente une stratégie anti-ban complète pour éviter les
+# bannissements WhatsApp. Les délais sont beaucoup plus longs que la config
+# standard, avec randomisation et pauses stratégiques.
+#
+# IMPORTANT: Avec cette configuration, l'envoi de 1000 messages prendra
+# environ 8 heures au lieu de 1.5 heures. C'est un compromis nécessaire
+# pour éviter les bannissements.
+#
+# Requirements: 1.1, 1.5, 3.1, 3.2, 3.3, 3.4, 5.1
+# ==========================================================================
+
+# ---------------------------------------------------------------------------
+# DÉLAIS DE BASE ANTI-BAN (Requirements: 1.1, 1.5)
+# ---------------------------------------------------------------------------
+# Délai de base entre messages (15-30 secondes selon warm-up)
+# Ces valeurs sont adaptatives selon le nombre de messages envoyés
+ANTI_BAN_BASE_DELAY_MIN = int(os.getenv("ANTI_BAN_BASE_DELAY_MIN", "15"))
+ANTI_BAN_BASE_DELAY_MAX = int(os.getenv("ANTI_BAN_BASE_DELAY_MAX", "30"))
+
+# Variation aléatoire ajoutée au délai de base (±5 secondes)
+# Permet d'éviter les patterns détectables par WhatsApp
+ANTI_BAN_RANDOM_VARIATION = int(os.getenv("ANTI_BAN_RANDOM_VARIATION", "5"))
+
+# Délai minimum absolu - jamais en dessous de cette valeur
+# Même avec la randomisation, le délai ne descendra pas sous 10 secondes
+ANTI_BAN_MIN_DELAY = int(os.getenv("ANTI_BAN_MIN_DELAY", "10"))
+
+# Délai "typing" humain simulé (1-3 secondes)
+# Simule le temps qu'un humain mettrait à taper un message
+HUMAN_TYPING_DELAY_MIN = 1
+HUMAN_TYPING_DELAY_MAX = 3
+
+# ---------------------------------------------------------------------------
+# CONFIGURATION DES LOTS ANTI-BAN (Requirements: 3.1)
+# ---------------------------------------------------------------------------
+# Taille des lots réduite pour plus de pauses stratégiques
+# 20 messages par lot au lieu de 50
+ANTI_BAN_BATCH_SIZE = int(os.getenv("ANTI_BAN_BATCH_SIZE", "20"))
+
+# ---------------------------------------------------------------------------
+# SEUILS DE PAUSES STRATÉGIQUES (Requirements: 3.1, 3.2, 3.3, 3.4)
+# ---------------------------------------------------------------------------
+# Pauses automatiques après un certain nombre de messages consécutifs
+# Ces pauses simulent le comportement d'un humain qui fait des pauses
+PAUSE_THRESHOLD_1 = 20   # Pause après 20 messages consécutifs
+PAUSE_THRESHOLD_2 = 40   # Pause après 40 messages consécutifs
+PAUSE_THRESHOLD_3 = 60   # Pause après 60 messages consécutifs
+PAUSE_THRESHOLD_4 = 100  # Pause après 100 messages consécutifs
+
+# Durées de pauses stratégiques (en secondes)
+# Les durées sont des tuples (min, max) pour randomisation
+PAUSE_DURATION_1 = (180, 300)    # 3-5 minutes après 20 messages
+PAUSE_DURATION_2 = (300, 480)    # 5-8 minutes après 40 messages
+PAUSE_DURATION_3 = (600, 900)    # 10-15 minutes après 60 messages
+PAUSE_DURATION_4 = (1200, 1800)  # 20-30 minutes après 100 messages
+
+# ---------------------------------------------------------------------------
+# SIMULATION DE COMPORTEMENT HUMAIN (Requirements: 4.1)
+# ---------------------------------------------------------------------------
+# Probabilité de micro-pause aléatoire (10% = 0.10)
+# Avec 10% de probabilité, une micro-pause sera ajoutée
+MICRO_PAUSE_PROBABILITY = 0.10
+
+# Durée des micro-pauses (30 secondes à 2 minutes)
+MICRO_PAUSE_DURATION = (30, 120)
+
+# ---------------------------------------------------------------------------
+# DÉTECTION DE RISQUE DE BAN (Requirements: 5.1)
+# ---------------------------------------------------------------------------
+# Codes d'erreur dangereux indiquant un risque de ban imminent
+# Si l'API retourne un de ces codes, une pause d'urgence est déclenchée
+BAN_RISK_ERROR_CODES = [
+    "rate_limit",      # Limite de débit atteinte
+    "spam_detected",   # WhatsApp a détecté du spam
+    "blocked",         # Numéro bloqué
+    "429",             # HTTP 429 Too Many Requests
+]
+
+# ---------------------------------------------------------------------------
+# SEUILS D'ERREUR ET ARRÊT D'URGENCE (Requirements: 5.2, 5.3, 5.5)
+# ---------------------------------------------------------------------------
+# Nombre d'erreurs consécutives avant arrêt total
+CONSECUTIVE_ERROR_HALT_THRESHOLD = 3
+
+# Fenêtre de temps pour compter les erreurs (en minutes)
+ERROR_WINDOW_MINUTES = 10
+
+# Nombre d'erreurs dans la fenêtre avant arrêt total
+ERROR_COUNT_HALT_THRESHOLD = 5
+
+# Seuil de taux d'erreur pour déclencher un warning (5%)
+ERROR_RATE_WARNING_THRESHOLD = 0.05
+
+# ---------------------------------------------------------------------------
+# DURÉES DE PAUSE D'URGENCE (Requirements: 5.1, 5.3)
+# ---------------------------------------------------------------------------
+# Pause d'urgence en cas de détection de risque de ban (30 minutes)
+EMERGENCY_PAUSE_SECONDS = 1800
+
+# Arrêt prolongé en cas d'erreurs multiples (1 heure)
+EXTENDED_HALT_SECONDS = 3600
+
+# ==========================================================================
 # ROBUSTESSE - PROTECTION CONTRE LES DOUBLONS ET INTERRUPTIONS
 # ==========================================================================
 # TTL pour les verrous d'idempotence (5 minutes)
@@ -73,6 +203,463 @@ SEND_OPERATION_TIMEOUT = 30
 
 # Nombre maximum de vérifications de statut avant abandon
 MAX_STATUS_CHECKS = 3
+
+
+# ==========================================================================
+# FONCTIONS ANTI-BAN - CALCUL DES DÉLAIS
+# ==========================================================================
+
+def get_warm_up_delay(messages_sent_today: int) -> float:
+    """
+    Calcule le délai de base selon le nombre de messages envoyés aujourd'hui.
+    
+    Stratégie de warm-up progressive:
+    - 0-30 messages: 25-35 secondes (démarrage très lent)
+    - 30-80 messages: 20-28 secondes (accélération progressive)
+    - 80-200 messages: 15-22 secondes (vitesse de croisière)
+    - 200-500 messages: 18-25 secondes (ralentissement)
+    - 500+ messages: 22-30 secondes (proche de la limite)
+    
+    Args:
+        messages_sent_today: Nombre de messages envoyés aujourd'hui
+    
+    Returns:
+        Délai de base en secondes (randomisé dans la plage appropriée)
+    
+    Validates: Requirements 2.1, 2.2, 2.3, 2.4, 2.5
+    """
+    if messages_sent_today < 30:
+        # Phase 1: Démarrage très lent (warm-up initial)
+        return random.uniform(25, 35)
+    
+    elif messages_sent_today < 80:
+        # Phase 2: Accélération progressive
+        return random.uniform(20, 28)
+    
+    elif messages_sent_today < 200:
+        # Phase 3: Vitesse de croisière (optimal)
+        return random.uniform(15, 22)
+    
+    elif messages_sent_today < 500:
+        # Phase 4: Ralentissement (approche de la limite)
+        return random.uniform(18, 25)
+    
+    else:
+        # Phase 5: Très lent (proche de la limite quotidienne)
+        return random.uniform(22, 30)
+
+
+def get_anti_ban_delay(messages_sent_today: int) -> float:
+    """
+    Calcule le délai anti-ban total avec randomisation et warm-up.
+    
+    Le délai est composé de:
+    1. Délai de base selon le warm-up (15-35 secondes selon la phase)
+    2. Variation aléatoire (±5 secondes)
+    3. Délai "typing" humain (1-3 secondes)
+    
+    Le délai final est garanti d'être au minimum ANTI_BAN_MIN_DELAY (10 secondes).
+    
+    Args:
+        messages_sent_today: Nombre de messages envoyés aujourd'hui
+    
+    Returns:
+        Délai total en secondes (minimum 10 secondes, maximum ~40 secondes)
+    
+    Validates: Requirements 1.1, 1.2, 1.3, 1.5, 1.6
+    """
+    # 1. Obtenir le délai de base selon le warm-up
+    base_delay = get_warm_up_delay(messages_sent_today)
+    
+    # 2. Ajouter variation aléatoire (±5 secondes)
+    random_variation = random.uniform(
+        -ANTI_BAN_RANDOM_VARIATION, 
+        ANTI_BAN_RANDOM_VARIATION
+    )
+    
+    # 3. Ajouter délai "typing" humain (1-3 secondes)
+    typing_delay = random.uniform(HUMAN_TYPING_DELAY_MIN, HUMAN_TYPING_DELAY_MAX)
+    
+    # Calculer le délai total
+    total_delay = base_delay + random_variation + typing_delay
+    
+    # Appliquer le plancher minimum (jamais en dessous de 10 secondes)
+    final_delay = max(total_delay, ANTI_BAN_MIN_DELAY)
+    
+    logger.info(
+        f"Délai anti-ban calculé: {final_delay:.1f}s "
+        f"(base={base_delay:.1f}s, variation={random_variation:.1f}s, typing={typing_delay:.1f}s)"
+    )
+    
+    return final_delay
+
+
+# ==========================================================================
+# FONCTIONS ANTI-BAN - PAUSES STRATÉGIQUES
+# ==========================================================================
+
+def should_take_strategic_pause(consecutive_messages: int) -> bool:
+    """
+    Vérifie si une pause stratégique est nécessaire.
+    
+    Les pauses stratégiques sont déclenchées à des seuils spécifiques
+    pour simuler un comportement humain qui fait des pauses régulières.
+    
+    Args:
+        consecutive_messages: Nombre de messages envoyés consécutivement
+    
+    Returns:
+        True si une pause est requise à ce seuil exact
+    
+    Validates: Requirements 3.1, 3.2, 3.3, 3.4
+    """
+    return consecutive_messages in [
+        PAUSE_THRESHOLD_1,  # 20 messages
+        PAUSE_THRESHOLD_2,  # 40 messages
+        PAUSE_THRESHOLD_3,  # 60 messages
+        PAUSE_THRESHOLD_4,  # 100 messages
+    ]
+
+
+def get_strategic_pause_duration(consecutive_messages: int) -> float:
+    """
+    Calcule la durée de pause stratégique avec randomisation.
+    
+    Les durées de pause augmentent avec le nombre de messages envoyés:
+    - 20 messages: 3-5 minutes
+    - 40 messages: 5-8 minutes
+    - 60 messages: 10-15 minutes
+    - 100 messages: 20-30 minutes
+    
+    Args:
+        consecutive_messages: Nombre de messages envoyés consécutivement
+    
+    Returns:
+        Durée de pause en secondes (0 si aucune pause requise)
+    
+    Validates: Requirements 3.1, 3.2, 3.3, 3.4, 3.5
+    """
+    if consecutive_messages >= PAUSE_THRESHOLD_4:
+        min_pause, max_pause = PAUSE_DURATION_4  # 20-30 minutes
+    elif consecutive_messages >= PAUSE_THRESHOLD_3:
+        min_pause, max_pause = PAUSE_DURATION_3  # 10-15 minutes
+    elif consecutive_messages >= PAUSE_THRESHOLD_2:
+        min_pause, max_pause = PAUSE_DURATION_2  # 5-8 minutes
+    elif consecutive_messages >= PAUSE_THRESHOLD_1:
+        min_pause, max_pause = PAUSE_DURATION_1  # 3-5 minutes
+    else:
+        return 0.0
+    
+    pause_duration = random.uniform(min_pause, max_pause)
+    
+    logger.info(
+        f"Pause stratégique: {pause_duration/60:.1f} minutes "
+        f"après {consecutive_messages} messages consécutifs"
+    )
+    
+    return pause_duration
+
+
+def reset_consecutive_counter(redis_client) -> None:
+    """
+    Réinitialise le compteur de messages consécutifs après une pause stratégique.
+    
+    Cette fonction est appelée après chaque pause stratégique pour
+    recommencer le comptage à zéro.
+    
+    Args:
+        redis_client: Client Redis pour accéder au compteur
+    
+    Validates: Requirements 3.6
+    """
+    try:
+        redis_client.set("anti_ban:consecutive_messages", 0)
+        logger.debug("Compteur de messages consécutifs réinitialisé à 0")
+    except Exception as e:
+        logger.error(f"Erreur réinitialisation compteur consécutif: {e}")
+
+
+# ==========================================================================
+# FONCTIONS ANTI-BAN - SIMULATION DE COMPORTEMENT HUMAIN
+# ==========================================================================
+
+def simulate_human_behavior() -> float:
+    """
+    Simule un comportement humain avec des micro-pauses aléatoires.
+    
+    Avec 10% de probabilité (MICRO_PAUSE_PROBABILITY), ajoute une micro-pause
+    de 30-120 secondes (MICRO_PAUSE_DURATION) pour simuler un comportement
+    humain naturel.
+    
+    Returns:
+        Durée de micro-pause en secondes (0.0 si pas de pause)
+    
+    Validates: Requirements 4.1
+    """
+    if random.random() < MICRO_PAUSE_PROBABILITY:
+        min_pause, max_pause = MICRO_PAUSE_DURATION
+        pause_duration = random.uniform(min_pause, max_pause)
+        logger.info(f"Micro-pause humaine: {pause_duration:.0f}s")
+        return pause_duration
+    return 0.0
+
+
+def is_night_time() -> bool:
+    """
+    Vérifie si l'heure actuelle est entre 23h et 6h (heures de nuit).
+    
+    Pendant les heures de nuit, l'envoi de messages doit être bloqué
+    pour simuler un comportement humain naturel (personne n'envoie
+    de messages professionnels à 3h du matin).
+    
+    Returns:
+        True si l'heure actuelle est entre 23h et 6h (exclusif), False sinon
+    
+    Validates: Requirements 4.2
+    """
+    current_hour = datetime.now().hour
+    # Night time: 23:00 to 05:59 (hour >= 23 OR hour < 6)
+    return current_hour >= 23 or current_hour < 6
+
+
+def get_message_length_delay(message_length: int) -> float:
+    """
+    Calcule un délai supplémentaire basé sur la longueur du message.
+    
+    Messages plus longs = délai légèrement plus long pour simuler
+    le temps qu'un humain mettrait à lire/écrire un message long.
+    
+    Formule: 1 seconde par 500 caractères, maximum 5 secondes.
+    
+    Args:
+        message_length: Longueur du message en caractères
+    
+    Returns:
+        Délai supplémentaire en secondes (0.0 à 5.0 secondes)
+    
+    Validates: Requirements 4.3
+    """
+    if message_length <= 0:
+        return 0.0
+    
+    # 1 seconde par 500 caractères, max 5 secondes
+    extra_delay = min(message_length / 500.0, 5.0)
+    return extra_delay
+
+
+# ==========================================================================
+# FONCTIONS ANTI-BAN - DÉTECTION DE RISQUE DE BAN
+# ==========================================================================
+
+def detect_ban_risk(error_code: str, error_message: str) -> dict:
+    """
+    Analyse un code d'erreur pour détecter un risque de ban.
+    
+    Cette fonction examine les codes d'erreur retournés par l'API Wassenger
+    pour identifier les signes de bannissement imminent. Si un code dangereux
+    est détecté, une pause d'urgence de 30 minutes est recommandée.
+    
+    Codes d'erreur dangereux:
+    - rate_limit: Limite de débit atteinte
+    - spam_detected: WhatsApp a détecté du spam
+    - blocked: Numéro bloqué
+    - 429: HTTP 429 Too Many Requests
+    
+    Args:
+        error_code: Code d'erreur retourné par l'API Wassenger
+        error_message: Message d'erreur associé
+    
+    Returns:
+        Dictionnaire avec:
+        - is_ban_risk: True si risque de ban détecté
+        - action: Action recommandée ('emergency_pause', 'halt', 'continue')
+        - pause_duration: Durée de pause en secondes (0 si pas de pause)
+    
+    Validates: Requirements 5.1
+    """
+    result = {
+        "is_ban_risk": False,
+        "action": "continue",
+        "pause_duration": 0
+    }
+    
+    # Convertir en chaînes pour la comparaison (gestion des None)
+    error_code_str = str(error_code).lower() if error_code else ""
+    error_message_str = str(error_message).lower() if error_message else ""
+    
+    # Vérifier les codes d'erreur dangereux
+    for danger_code in BAN_RISK_ERROR_CODES:
+        danger_code_lower = danger_code.lower()
+        if danger_code_lower in error_code_str or danger_code_lower in error_message_str:
+            result["is_ban_risk"] = True
+            result["action"] = "emergency_pause"
+            result["pause_duration"] = EMERGENCY_PAUSE_SECONDS  # 30 minutes
+            
+            logger.critical(
+                f"⚠️ RISQUE DE BAN DÉTECTÉ: {error_code} - {error_message}. "
+                f"Pause d'urgence de {EMERGENCY_PAUSE_SECONDS/60:.0f} minutes recommandée."
+            )
+            break
+    
+    return result
+
+
+def check_error_thresholds(redis_client) -> dict:
+    """
+    Vérifie les seuils d'erreur pour décider si l'envoi doit être arrêté.
+    
+    Cette fonction analyse les compteurs d'erreur stockés dans Redis pour
+    déterminer si l'envoi de messages doit être interrompu. Les critères sont:
+    
+    1. Erreurs consécutives: Si 3 erreurs consécutives se produisent, arrêt total
+    2. Erreurs dans la fenêtre: Si 5 erreurs en 10 minutes, arrêt pour 1 heure
+    3. Taux d'erreur: Si > 5%, warning (pas d'arrêt)
+    
+    Args:
+        redis_client: Client Redis pour accéder aux compteurs
+    
+    Returns:
+        Dictionnaire avec:
+        - should_halt: True si l'envoi doit être arrêté
+        - reason: Raison de l'arrêt (None si pas d'arrêt)
+        - halt_duration: Durée d'arrêt en secondes (0 si pas d'arrêt)
+        - warning: Message de warning si taux d'erreur élevé (None sinon)
+    
+    Validates: Requirements 5.2, 5.3, 5.5
+    """
+    result = {
+        "should_halt": False,
+        "reason": None,
+        "halt_duration": 0,
+        "warning": None
+    }
+    
+    try:
+        # Vérifier les erreurs consécutives (Requirements 5.2)
+        consecutive_errors_raw = redis_client.get("anti_ban:consecutive_errors")
+        consecutive_errors = int(consecutive_errors_raw) if consecutive_errors_raw else 0
+        
+        if consecutive_errors >= CONSECUTIVE_ERROR_HALT_THRESHOLD:
+            result["should_halt"] = True
+            result["reason"] = f"{consecutive_errors} erreurs consécutives (seuil: {CONSECUTIVE_ERROR_HALT_THRESHOLD})"
+            result["halt_duration"] = EXTENDED_HALT_SECONDS  # 1 heure
+            
+            logger.critical(
+                f"⚠️ ARRÊT D'URGENCE: {consecutive_errors} erreurs consécutives. "
+                f"Arrêt pour {EXTENDED_HALT_SECONDS/60:.0f} minutes."
+            )
+            return result
+        
+        # Vérifier les erreurs dans la fenêtre de temps (Requirements 5.3)
+        # On utilise une clé avec le timestamp arrondi à la minute
+        current_minute = datetime.now().strftime('%Y%m%d%H%M')
+        
+        # Compter les erreurs dans les dernières ERROR_WINDOW_MINUTES minutes
+        errors_in_window = 0
+        for i in range(ERROR_WINDOW_MINUTES):
+            # Calculer le timestamp de chaque minute dans la fenêtre
+            from datetime import timedelta
+            check_time = datetime.now() - timedelta(minutes=i)
+            window_key = f"anti_ban:errors:{check_time.strftime('%Y%m%d%H%M')}"
+            
+            errors_raw = redis_client.get(window_key)
+            if errors_raw:
+                errors_in_window += int(errors_raw)
+        
+        if errors_in_window >= ERROR_COUNT_HALT_THRESHOLD:
+            result["should_halt"] = True
+            result["reason"] = f"{errors_in_window} erreurs en {ERROR_WINDOW_MINUTES} minutes (seuil: {ERROR_COUNT_HALT_THRESHOLD})"
+            result["halt_duration"] = EXTENDED_HALT_SECONDS  # 1 heure
+            
+            logger.critical(
+                f"⚠️ ARRÊT D'URGENCE: {errors_in_window} erreurs en {ERROR_WINDOW_MINUTES} minutes. "
+                f"Arrêt pour {EXTENDED_HALT_SECONDS/60:.0f} minutes."
+            )
+            return result
+        
+        # Vérifier le taux d'erreur (Requirements 5.5)
+        total_sent_raw = redis_client.get("anti_ban:total_sent")
+        total_errors_raw = redis_client.get("anti_ban:total_errors")
+        
+        total_sent = int(total_sent_raw) if total_sent_raw else 0
+        total_errors = int(total_errors_raw) if total_errors_raw else 0
+        
+        if total_sent > 0:
+            error_rate = total_errors / total_sent
+            if error_rate >= ERROR_RATE_WARNING_THRESHOLD:
+                result["warning"] = (
+                    f"Taux d'erreur élevé: {error_rate:.1%} "
+                    f"({total_errors}/{total_sent})"
+                )
+                logger.warning(f"⚠️ {result['warning']}")
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Erreur lors de la vérification des seuils d'erreur: {e}")
+        # En cas d'erreur Redis, on n'arrête pas (fail-open)
+        return result
+
+
+def is_safe_to_send(redis_client, messages_sent_today: int) -> tuple:
+    """
+    Vérifie tous les critères anti-ban avant d'envoyer un message.
+    
+    Cette fonction combine toutes les vérifications anti-ban pour déterminer
+    si l'envoi d'un message est sûr. Les vérifications incluent:
+    
+    1. Heures de nuit (23h-6h): Envoi bloqué
+    2. Limite quotidienne (1000 messages): Envoi bloqué
+    3. Seuils d'erreur: Envoi bloqué si trop d'erreurs
+    4. Pause d'urgence en cours: Envoi bloqué
+    
+    Args:
+        redis_client: Client Redis pour accéder aux compteurs
+        messages_sent_today: Nombre de messages envoyés aujourd'hui
+    
+    Returns:
+        Tuple (can_send: bool, reason: str)
+        - can_send: True si l'envoi est autorisé
+        - reason: "OK" si autorisé, sinon la raison du blocage
+    
+    Validates: Requirements 4.2, 5.2, 5.3, 6.1
+    """
+    # Vérifier si c'est la nuit (Requirements 4.2)
+    if is_night_time():
+        return False, "Heures de nuit (23h-6h) - envoi reporté à 7h"
+    
+    # Vérifier la limite quotidienne (Requirements 6.1)
+    # Note: La limite est de 1000 messages par jour
+    DAILY_LIMIT = 1000
+    if messages_sent_today >= DAILY_LIMIT:
+        return False, f"Limite quotidienne de {DAILY_LIMIT} messages atteinte"
+    
+    # Vérifier les seuils d'erreur (Requirements 5.2, 5.3)
+    try:
+        error_check = check_error_thresholds(redis_client)
+        if error_check["should_halt"]:
+            return False, f"Arrêt d'urgence: {error_check['reason']}"
+    except Exception as e:
+        logger.error(f"Erreur lors de la vérification des seuils d'erreur: {e}")
+        # En cas d'erreur Redis, on autorise (fail-open)
+    
+    # Vérifier si une pause d'urgence est en cours
+    try:
+        emergency_pause_until = redis_client.get("anti_ban:emergency_pause_until")
+        if emergency_pause_until:
+            # Décoder si c'est en bytes
+            if isinstance(emergency_pause_until, bytes):
+                emergency_pause_until = emergency_pause_until.decode()
+            
+            pause_end = datetime.fromisoformat(emergency_pause_until)
+            if datetime.now() < pause_end:
+                remaining = (pause_end - datetime.now()).seconds
+                return False, f"Pause d'urgence en cours ({remaining}s restantes)"
+    except Exception as e:
+        logger.error(f"Erreur lors de la vérification de la pause d'urgence: {e}")
+        # En cas d'erreur, on autorise (fail-open)
+    
+    return True, "OK"
 
 
 def get_idempotency_key(message_id: int, operation: str = "send") -> str:
@@ -278,24 +865,95 @@ def calculate_retry_delay(attempt: int) -> int:
 
 def wait_for_wassenger_rate_limit() -> None:
     """
-    Attend le délai nécessaire pour respecter le rate limit Wassenger (1 msg/2s).
+    Attend le délai nécessaire pour respecter le rate limit anti-ban Wassenger.
     
-    Cette fonction est appelée avant chaque envoi de message pour s'assurer
-    qu'au moins 2 secondes se sont écoulées depuis le dernier envoi.
+    Cette fonction implémente le système anti-ban complet avec:
+    1. Vérification is_safe_to_send() avant chaque envoi (Requirements 4.2, 5.2, 5.3, 6.1)
+    2. Délai adaptatif via get_anti_ban_delay() avec warm-up (Requirements 1.1, 1.2, 1.3, 2.1-2.5)
+    3. Micro-pauses humaines aléatoires via simulate_human_behavior() (Requirements 4.1)
     
-    Exigences: 2.5
+    Le délai est calculé dynamiquement selon:
+    - Le nombre de messages envoyés aujourd'hui (warm-up progressif)
+    - Une variation aléatoire (±5 secondes)
+    - Un délai "typing" humain (1-3 secondes)
+    - Des micro-pauses aléatoires (10% de probabilité, 30-120 secondes)
+    
+    Validates: Requirements 1.1, 1.2, 1.3, 2.1, 2.2, 2.3, 2.4, 2.5, 4.1, 4.2, 5.2, 5.3, 6.1
     """
     global _last_send_timestamp
     
-    if _last_send_timestamp > 0:
-        elapsed = time.time() - _last_send_timestamp
-        if elapsed < WASSENGER_RATE_LIMIT_SECONDS:
-            wait_time = WASSENGER_RATE_LIMIT_SECONDS - elapsed
-            logger.debug(f"Rate limit Wassenger: attente de {wait_time:.2f}s")
-            time.sleep(wait_time)
-    
-    # Mettre à jour le timestamp après l'attente
-    _last_send_timestamp = time.time()
+    try:
+        redis_client = monitoring_service.redis_client
+        
+        # =======================================================================
+        # ÉTAPE 1: Récupérer le compteur de messages du jour depuis Redis
+        # =======================================================================
+        messages_today_raw = redis_client.get("anti_ban:messages_today")
+        messages_sent_today = int(messages_today_raw) if messages_today_raw else 0
+        
+        # =======================================================================
+        # ÉTAPE 2: Vérification is_safe_to_send() (Requirements 4.2, 5.2, 5.3, 6.1)
+        # =======================================================================
+        can_send, reason = is_safe_to_send(redis_client, messages_sent_today)
+        if not can_send:
+            logger.warning(f"⚠️ Envoi bloqué par anti-ban: {reason}")
+            # Lever une exception pour que la tâche soit réessayée plus tard
+            raise RuntimeError(f"Envoi bloqué: {reason}")
+        
+        # =======================================================================
+        # ÉTAPE 3: Calculer le délai anti-ban adaptatif (Requirements 1.1-1.6, 2.1-2.5)
+        # =======================================================================
+        anti_ban_delay = get_anti_ban_delay(messages_sent_today)
+        
+        # =======================================================================
+        # ÉTAPE 4: Appliquer le délai en tenant compte du temps écoulé
+        # =======================================================================
+        if _last_send_timestamp > 0:
+            elapsed = time.time() - _last_send_timestamp
+            if elapsed < anti_ban_delay:
+                wait_time = anti_ban_delay - elapsed
+                logger.info(
+                    f"Anti-ban rate limit: attente de {wait_time:.1f}s "
+                    f"(délai total: {anti_ban_delay:.1f}s, écoulé: {elapsed:.1f}s, "
+                    f"messages aujourd'hui: {messages_sent_today})"
+                )
+                time.sleep(wait_time)
+        else:
+            # Premier message de la session - appliquer le délai complet
+            logger.info(
+                f"Anti-ban rate limit (premier message): attente de {anti_ban_delay:.1f}s "
+                f"(messages aujourd'hui: {messages_sent_today})"
+            )
+            time.sleep(anti_ban_delay)
+        
+        # =======================================================================
+        # ÉTAPE 5: Micro-pauses humaines aléatoires (Requirements 4.1)
+        # =======================================================================
+        micro_pause = simulate_human_behavior()
+        if micro_pause > 0:
+            logger.info(f"Micro-pause humaine appliquée: {micro_pause:.0f}s")
+            time.sleep(micro_pause)
+        
+        # =======================================================================
+        # ÉTAPE 6: Mettre à jour le timestamp après l'attente
+        # =======================================================================
+        _last_send_timestamp = time.time()
+        
+    except RuntimeError:
+        # Re-lever les erreurs de blocage anti-ban
+        raise
+    except Exception as e:
+        # En cas d'erreur Redis ou autre, fallback sur le délai fixe original
+        logger.error(f"Erreur système anti-ban, fallback sur délai fixe: {e}")
+        
+        if _last_send_timestamp > 0:
+            elapsed = time.time() - _last_send_timestamp
+            if elapsed < WASSENGER_RATE_LIMIT_SECONDS:
+                wait_time = WASSENGER_RATE_LIMIT_SECONDS - elapsed
+                logger.debug(f"Rate limit Wassenger (fallback): attente de {wait_time:.2f}s")
+                time.sleep(wait_time)
+        
+        _last_send_timestamp = time.time()
 
 
 def has_contact_interacted(client, campaign_id: int, contact_id: int, since_timestamp: str = None) -> bool:
@@ -514,6 +1172,18 @@ def send_single_message(
         # Respecter le rate limit Wassenger (25s entre messages) - Exigence 2.5
         wait_for_wassenger_rate_limit()
         
+        # =======================================================================
+        # ANTI-BAN: Délai basé sur la longueur du message (Requirements 4.3)
+        # =======================================================================
+        message_content = message["content"]
+        message_length_delay = get_message_length_delay(len(message_content))
+        if message_length_delay > 0:
+            logger.debug(
+                f"Message {message_id}: délai longueur message {message_length_delay:.1f}s "
+                f"(longueur: {len(message_content)} caractères)"
+            )
+            time.sleep(message_length_delay)
+        
         # Envoyer le message via Wassenger API
         phone = contact.get("whatsapp_id") or contact.get("full_number")
         
@@ -522,7 +1192,7 @@ def send_single_message(
         response = run_async(
             wassenger_service.send_message(
                 phone=phone,
-                text=message["content"]
+                text=message_content
             )
         )
         
@@ -537,6 +1207,16 @@ def send_single_message(
                 "sent_at": sent_at_timestamp,
                 "error_message": None
             })
+            
+            # =======================================================================
+            # ANTI-BAN: Réinitialiser le compteur d'erreurs consécutives (Requirements 5.2)
+            # =======================================================================
+            try:
+                redis_client = monitoring_service.redis_client
+                redis_client.set("anti_ban:consecutive_errors", 0)
+                logger.debug(f"Message {message_id}: compteur erreurs consécutives réinitialisé")
+            except Exception as redis_error:
+                logger.warning(f"Erreur réinitialisation compteur erreurs: {redis_error}")
             
             # Incrémenter le compteur de monitoring - Requirements: 1.1
             logger.info(f"Compteur {message_type} incrémenté")
@@ -568,6 +1248,60 @@ def send_single_message(
         else:
             # Échec de l'envoi - Incrémenter le compteur d'erreurs - Requirements: 6.1
             monitoring_service.increment_error_counter()
+            
+            # =======================================================================
+            # ANTI-BAN: Détection de risque de ban (Requirements 5.1)
+            # =======================================================================
+            ban_risk = detect_ban_risk(response.error_code, response.error_message)
+            if ban_risk["is_ban_risk"]:
+                logger.critical(
+                    f"⚠️ RISQUE DE BAN DÉTECTÉ pour message {message_id}: "
+                    f"{response.error_code} - {response.error_message}"
+                )
+                # Déclencher pause d'urgence en stockant le timestamp de fin dans Redis
+                try:
+                    redis_client = monitoring_service.redis_client
+                    from datetime import timedelta
+                    pause_end = datetime.now() + timedelta(seconds=ban_risk["pause_duration"])
+                    redis_client.set(
+                        "anti_ban:emergency_pause_until",
+                        pause_end.isoformat(),
+                        ex=int(ban_risk["pause_duration"]) + 60  # TTL avec marge
+                    )
+                    logger.critical(
+                        f"Pause d'urgence activée jusqu'à {pause_end.isoformat()} "
+                        f"({ban_risk['pause_duration']/60:.0f} minutes)"
+                    )
+                except Exception as redis_error:
+                    logger.error(f"Erreur activation pause d'urgence: {redis_error}")
+            
+            # =======================================================================
+            # ANTI-BAN: Mise à jour des compteurs d'erreur dans Redis (Requirements 5.2, 5.3)
+            # =======================================================================
+            try:
+                redis_client = monitoring_service.redis_client
+                
+                # Incrémenter le compteur d'erreurs consécutives (Requirements 5.2)
+                consecutive_errors = redis_client.incr("anti_ban:consecutive_errors")
+                redis_client.expire("anti_ban:consecutive_errors", 3600)  # TTL 1 heure
+                logger.debug(f"Erreurs consécutives: {consecutive_errors}")
+                
+                # Incrémenter le compteur d'erreurs dans la fenêtre de temps (Requirements 5.3)
+                current_minute = datetime.now().strftime('%Y%m%d%H%M')
+                window_key = f"anti_ban:errors:{current_minute}"
+                redis_client.incr(window_key)
+                redis_client.expire(window_key, ERROR_WINDOW_MINUTES * 60 + 60)  # TTL avec marge
+                
+                # Incrémenter le compteur total d'erreurs (Requirements 5.5)
+                redis_client.incr("anti_ban:total_errors")
+                redis_client.expire("anti_ban:total_errors", 86400)  # TTL 24h
+                
+                logger.debug(
+                    f"Message {message_id}: compteurs erreurs mis à jour "
+                    f"(consécutives: {consecutive_errors})"
+                )
+            except Exception as redis_error:
+                logger.warning(f"Erreur mise à jour compteurs erreurs Redis: {redis_error}")
             
             retry_count = (message.get("retry_count") or 0) + 1
             
@@ -657,6 +1391,145 @@ def send_single_message(
 
 
 
+def calculate_strategic_pause_delay(consecutive_count: int) -> float:
+    """
+    Calcule le délai de pause stratégique cumulé pour un nombre de messages consécutifs.
+    
+    Cette fonction calcule le temps total de pause stratégique qui doit être ajouté
+    au délai d'un message en fonction du nombre de messages consécutifs envoyés.
+    
+    Les pauses stratégiques sont déclenchées aux seuils suivants:
+    - 20 messages: 3-5 minutes (moyenne: 240s)
+    - 40 messages: 5-8 minutes (moyenne: 390s)
+    - 60 messages: 10-15 minutes (moyenne: 750s)
+    - 100 messages: 20-30 minutes (moyenne: 1500s)
+    
+    Args:
+        consecutive_count: Nombre de messages consécutifs (1-indexed)
+    
+    Returns:
+        Délai de pause stratégique cumulé en secondes
+    
+    Validates: Requirements 3.1, 3.2, 3.3, 3.4
+    """
+    total_pause = 0.0
+    
+    # Utiliser les valeurs moyennes des plages pour le calcul prédictif
+    # (la randomisation réelle se fait dans get_strategic_pause_duration)
+    PAUSE_DURATION_1_AVG = (PAUSE_DURATION_1[0] + PAUSE_DURATION_1[1]) / 2  # 240s
+    PAUSE_DURATION_2_AVG = (PAUSE_DURATION_2[0] + PAUSE_DURATION_2[1]) / 2  # 390s
+    PAUSE_DURATION_3_AVG = (PAUSE_DURATION_3[0] + PAUSE_DURATION_3[1]) / 2  # 750s
+    PAUSE_DURATION_4_AVG = (PAUSE_DURATION_4[0] + PAUSE_DURATION_4[1]) / 2  # 1500s
+    
+    # Ajouter les pauses pour chaque seuil dépassé
+    if consecutive_count > PAUSE_THRESHOLD_1:  # > 20
+        total_pause += PAUSE_DURATION_1_AVG
+    if consecutive_count > PAUSE_THRESHOLD_2:  # > 40
+        total_pause += PAUSE_DURATION_2_AVG
+    if consecutive_count > PAUSE_THRESHOLD_3:  # > 60
+        total_pause += PAUSE_DURATION_3_AVG
+    if consecutive_count > PAUSE_THRESHOLD_4:  # > 100
+        total_pause += PAUSE_DURATION_4_AVG
+    
+    # Pour les messages au-delà de 100, ajouter des pauses supplémentaires
+    # tous les 100 messages
+    if consecutive_count > PAUSE_THRESHOLD_4:
+        extra_pauses = (consecutive_count - PAUSE_THRESHOLD_4) // PAUSE_THRESHOLD_4
+        total_pause += extra_pauses * PAUSE_DURATION_4_AVG
+    
+    return total_pause
+
+
+def initialize_consecutive_counter(redis_client, campaign_id: int) -> None:
+    """
+    Initialise le compteur de messages consécutifs pour une campagne.
+    
+    Cette fonction est appelée au début de l'envoi d'une campagne pour
+    réinitialiser le compteur de messages consécutifs à 0.
+    
+    Args:
+        redis_client: Client Redis
+        campaign_id: ID de la campagne
+    
+    Validates: Requirements 3.1, 3.2, 3.3, 3.4
+    """
+    try:
+        key = f"anti_ban:consecutive_messages:{campaign_id}"
+        redis_client.set(key, 0, ex=86400)  # TTL 24h
+        logger.info(f"Compteur messages consécutifs initialisé pour campagne {campaign_id}")
+    except Exception as e:
+        logger.error(f"Erreur initialisation compteur consécutif campagne {campaign_id}: {e}")
+
+
+def increment_consecutive_counter(redis_client, campaign_id: int) -> int:
+    """
+    Incrémente le compteur de messages consécutifs pour une campagne.
+    
+    Cette fonction est appelée après chaque message envoyé pour suivre
+    le nombre de messages consécutifs et déclencher les pauses stratégiques.
+    
+    Args:
+        redis_client: Client Redis
+        campaign_id: ID de la campagne
+    
+    Returns:
+        Nouvelle valeur du compteur
+    
+    Validates: Requirements 3.1, 3.2, 3.3, 3.4
+    """
+    try:
+        key = f"anti_ban:consecutive_messages:{campaign_id}"
+        new_count = redis_client.incr(key)
+        redis_client.expire(key, 86400)  # Renouveler TTL 24h
+        return new_count
+    except Exception as e:
+        logger.error(f"Erreur incrémentation compteur consécutif campagne {campaign_id}: {e}")
+        return 0
+
+
+def get_consecutive_counter(redis_client, campaign_id: int) -> int:
+    """
+    Récupère la valeur actuelle du compteur de messages consécutifs.
+    
+    Args:
+        redis_client: Client Redis
+        campaign_id: ID de la campagne
+    
+    Returns:
+        Valeur actuelle du compteur (0 si non trouvé)
+    
+    Validates: Requirements 3.1, 3.2, 3.3, 3.4
+    """
+    try:
+        key = f"anti_ban:consecutive_messages:{campaign_id}"
+        value = redis_client.get(key)
+        return int(value) if value else 0
+    except Exception as e:
+        logger.error(f"Erreur lecture compteur consécutif campagne {campaign_id}: {e}")
+        return 0
+
+
+def reset_campaign_consecutive_counter(redis_client, campaign_id: int) -> None:
+    """
+    Réinitialise le compteur de messages consécutifs après une pause stratégique.
+    
+    Cette fonction est appelée après chaque pause stratégique pour
+    recommencer le comptage à zéro.
+    
+    Args:
+        redis_client: Client Redis
+        campaign_id: ID de la campagne
+    
+    Validates: Requirements 3.6
+    """
+    try:
+        key = f"anti_ban:consecutive_messages:{campaign_id}"
+        redis_client.set(key, 0, ex=86400)  # TTL 24h
+        logger.debug(f"Compteur messages consécutifs réinitialisé pour campagne {campaign_id}")
+    except Exception as e:
+        logger.error(f"Erreur réinitialisation compteur consécutif campagne {campaign_id}: {e}")
+
+
 @celery_app.task(
     bind=True,
     name="app.tasks.message_tasks.send_campaign_messages",
@@ -671,27 +1544,50 @@ def send_campaign_messages(
     Envoie les messages d'une campagne par lots via Wassenger API.
     
     ANTI-BAN STRATEGY 2025:
-    - Délai de 25 secondes entre chaque message
-    - Envoi par lots de 25 messages avec pause de 5 minutes entre les lots
-    - Pour 1000 messages: ~7-8 heures d'envoi total
+    - Délai de 15-35 secondes entre chaque message (adaptatif selon warm-up)
+    - Envoi par lots de 20 messages (ANTI_BAN_BATCH_SIZE)
+    - Pauses stratégiques automatiques aux seuils 20, 40, 60, 100 messages
+    - Pour 1000 messages: ~8-10 heures d'envoi total
+    
+    PAUSES STRATÉGIQUES (Requirements 3.1, 3.2, 3.3, 3.4):
+    - Après 20 messages: pause de 3-5 minutes
+    - Après 40 messages: pause de 5-8 minutes
+    - Après 60 messages: pause de 10-15 minutes
+    - Après 100 messages: pause de 20-30 minutes
+    - Le compteur est réinitialisé après chaque pause (Requirements 3.6)
     
     Args:
         campaign_id: ID de la campagne
-        batch_size: Taille des lots (défaut: BATCH_SIZE = 25)
+        batch_size: Taille des lots (défaut: ANTI_BAN_BATCH_SIZE = 20)
     
     Returns:
         Dictionnaire avec les statistiques d'envoi
     
     Exigences: 6.1
+    Validates: Requirements 3.1, 3.2, 3.3, 3.4, 3.6
     """
     db = get_db()
     client = get_supabase_client()
     
-    # Utiliser la taille de lot par défaut si non spécifiée
+    # ==========================================================================
+    # ANTI-BAN: Utiliser ANTI_BAN_BATCH_SIZE (20) au lieu de BATCH_SIZE (50)
+    # Requirements: 3.1
+    # ==========================================================================
     if batch_size is None:
-        batch_size = BATCH_SIZE
+        batch_size = ANTI_BAN_BATCH_SIZE  # 20 messages par lot
     
     try:
+        # =======================================================================
+        # ANTI-BAN: Initialiser le compteur de messages consécutifs
+        # Requirements: 3.1, 3.2, 3.3, 3.4
+        # =======================================================================
+        try:
+            redis_client = monitoring_service.redis_client
+            initialize_consecutive_counter(redis_client, campaign_id)
+            logger.info(f"Campagne {campaign_id}: compteur messages consécutifs initialisé")
+        except Exception as redis_error:
+            logger.warning(f"Erreur initialisation compteur Redis: {redis_error}")
+        
         # Récupérer la campagne directement (sans filtre user_id pour les tâches Celery)
         campaign_response = client.table("campaigns").select("*").eq("id", campaign_id).limit(1).execute()
         campaign = campaign_response.data[0] if campaign_response.data else None
@@ -718,39 +1614,76 @@ def send_campaign_messages(
         template_name = campaign.get("template_name")
         
         # ==========================================================================
-        # ANTI-BAN BATCH LOGIC 2025
+        # ANTI-BAN BATCH LOGIC 2025 - AVEC PAUSES STRATÉGIQUES
         # ==========================================================================
-        # Stratégie: Envoyer par lots avec pauses pour éviter les bans WhatsApp
-        # - Lot de 25 messages avec 25s entre chaque message
-        # - Pause de 5 minutes entre chaque lot
-        # - Temps par lot: 25 * 25s = 625s (~10 min)
-        # - Pour 1000 messages (40 lots): ~7-8 heures
+        # Stratégie: Envoyer par lots avec pauses stratégiques pour éviter les bans
+        # - Lot de 20 messages (ANTI_BAN_BATCH_SIZE)
+        # - Délai moyen de ~22s entre chaque message (warm-up + randomisation)
+        # - Pauses stratégiques aux seuils 20, 40, 60, 100 messages
+        # - Pour 1000 messages: ~8-10 heures d'envoi total
+        #
+        # Requirements: 3.1, 3.2, 3.3, 3.4, 3.6
         # ==========================================================================
         
         tasks_created = 0
         
+        # Délai moyen estimé entre messages (pour le calcul du temps total)
+        # Utilise la moyenne des délais warm-up + variation + typing
+        AVERAGE_DELAY_SECONDS = 22  # Moyenne estimée des délais anti-ban
+        
+        # Compteur de messages consécutifs pour le calcul des pauses stratégiques
+        consecutive_count = 0
+        cumulative_strategic_pause = 0.0
+        
         for i, message in enumerate(pending_messages):
+            # =======================================================================
+            # ANTI-BAN: Incrémenter le compteur de messages consécutifs
+            # Requirements: 3.1, 3.2, 3.3, 3.4
+            # =======================================================================
+            consecutive_count += 1
+            
             # Calculer le numéro de lot actuel
             batch_number = i // batch_size
             position_in_batch = i % batch_size
             
+            # =======================================================================
+            # ANTI-BAN: Vérifier et calculer les pauses stratégiques
+            # Requirements: 3.1, 3.2, 3.3, 3.4, 3.6
+            # =======================================================================
+            if should_take_strategic_pause(consecutive_count):
+                # Calculer la durée de pause stratégique
+                pause_duration = get_strategic_pause_duration(consecutive_count)
+                cumulative_strategic_pause += pause_duration
+                
+                logger.info(
+                    f"Campagne {campaign_id}: Pause stratégique programmée après message {i + 1} "
+                    f"({consecutive_count} messages consécutifs) - durée: {pause_duration/60:.1f} min"
+                )
+                
+                # Réinitialiser le compteur après la pause (Requirements 3.6)
+                # Note: Le compteur sera réinitialisé dans Redis par send_single_message
+                # après l'exécution de la pause
+                consecutive_count = 0
+            
             # Calculer le délai total:
-            # - Délai de base: position dans le lot * rate limit
-            # - Délai de pause: nombre de lots précédents * pause entre lots
-            base_delay = position_in_batch * WASSENGER_RATE_LIMIT_SECONDS
+            # - Délai de base: position dans le lot * délai moyen anti-ban
+            # - Délai de pause entre lots: nombre de lots précédents * pause entre lots
+            # - Délai de pauses stratégiques cumulées
+            base_delay = position_in_batch * AVERAGE_DELAY_SECONDS
             batch_pause_delay = batch_number * BATCH_PAUSE_SECONDS
             
             # Ajouter aussi le temps des lots précédents (messages déjà envoyés)
-            previous_batches_time = batch_number * batch_size * WASSENGER_RATE_LIMIT_SECONDS
+            previous_batches_time = batch_number * batch_size * AVERAGE_DELAY_SECONDS
             
-            total_delay = base_delay + batch_pause_delay + previous_batches_time
+            # Ajouter les pauses stratégiques cumulées
+            total_delay = base_delay + batch_pause_delay + previous_batches_time + cumulative_strategic_pause
             
             # Log pour le premier message de chaque lot
             if position_in_batch == 0:
                 logger.info(
                     f"Campagne {campaign_id}: Lot {batch_number + 1} programmé "
                     f"(messages {i + 1}-{min(i + batch_size, total_messages)}) "
-                    f"démarrage dans {total_delay}s"
+                    f"démarrage dans {total_delay:.0f}s (pauses stratégiques: {cumulative_strategic_pause/60:.1f}min)"
                 )
             
             # Créer une tâche d'envoi individuel avec le délai calculé
@@ -765,22 +1698,47 @@ def send_campaign_messages(
             )
             tasks_created += 1
         
-        # Calculer le temps estimé de complétion
+        # Calculer le temps estimé de complétion avec pauses stratégiques
         num_batches = (total_messages + batch_size - 1) // batch_size  # Arrondi supérieur
+        
+        # Calculer le nombre de pauses stratégiques attendues
+        num_strategic_pauses = 0
+        total_strategic_pause_time = 0.0
+        
+        # Pauses aux seuils 20, 40, 60, 100 (puis tous les 100)
+        if total_messages > PAUSE_THRESHOLD_1:
+            num_strategic_pauses += 1
+            total_strategic_pause_time += (PAUSE_DURATION_1[0] + PAUSE_DURATION_1[1]) / 2
+        if total_messages > PAUSE_THRESHOLD_2:
+            num_strategic_pauses += 1
+            total_strategic_pause_time += (PAUSE_DURATION_2[0] + PAUSE_DURATION_2[1]) / 2
+        if total_messages > PAUSE_THRESHOLD_3:
+            num_strategic_pauses += 1
+            total_strategic_pause_time += (PAUSE_DURATION_3[0] + PAUSE_DURATION_3[1]) / 2
+        if total_messages > PAUSE_THRESHOLD_4:
+            num_strategic_pauses += 1
+            total_strategic_pause_time += (PAUSE_DURATION_4[0] + PAUSE_DURATION_4[1]) / 2
+            # Pauses supplémentaires tous les 100 messages
+            extra_pauses = (total_messages - PAUSE_THRESHOLD_4) // PAUSE_THRESHOLD_4
+            num_strategic_pauses += extra_pauses
+            total_strategic_pause_time += extra_pauses * (PAUSE_DURATION_4[0] + PAUSE_DURATION_4[1]) / 2
+        
         estimated_completion_time = (
-            total_messages * WASSENGER_RATE_LIMIT_SECONDS +  # Temps d'envoi
+            total_messages * AVERAGE_DELAY_SECONDS +  # Temps d'envoi avec délais anti-ban
             (num_batches - 1) * BATCH_PAUSE_SECONDS +  # Pauses entre lots
+            total_strategic_pause_time +  # Pauses stratégiques
             60  # Marge de sécurité
         )
         
         # Convertir en heures/minutes pour le log
-        hours = estimated_completion_time // 3600
-        minutes = (estimated_completion_time % 3600) // 60
+        hours = int(estimated_completion_time // 3600)
+        minutes = int((estimated_completion_time % 3600) // 60)
         
         logger.info(
             f"Campagne {campaign_id}: {tasks_created} tâches créées en {num_batches} lots. "
-            f"Délai entre messages: {WASSENGER_RATE_LIMIT_SECONDS}s, "
-            f"Pause entre lots: {BATCH_PAUSE_SECONDS}s. "
+            f"Délai moyen entre messages: {AVERAGE_DELAY_SECONDS}s, "
+            f"Pause entre lots: {BATCH_PAUSE_SECONDS}s, "
+            f"Pauses stratégiques: {num_strategic_pauses} ({total_strategic_pause_time/60:.0f}min). "
             f"Temps estimé: {hours}h{minutes}min"
         )
         
@@ -796,6 +1754,8 @@ def send_campaign_messages(
             "total_messages": total_messages,
             "tasks_created": tasks_created,
             "num_batches": num_batches,
+            "num_strategic_pauses": num_strategic_pauses,
+            "total_strategic_pause_minutes": round(total_strategic_pause_time / 60, 1),
             "estimated_completion_seconds": estimated_completion_time,
             "estimated_completion_hours": round(estimated_completion_time / 3600, 1)
         }

@@ -3,6 +3,20 @@ Configuration Celery - Gestion des tâches asynchrones
 Utilise Redis comme message broker pour l'envoi massif de messages WhatsApp
 
 Exigences: 16.1, 16.3
+
+SYSTÈME ANTI-BAN 2025:
+Ce module configure Celery en mode single-threaded pour éviter les bannissements WhatsApp.
+Documentation complète: .kiro/specs/whatsapp-ban-prevention/design.md
+
+Configuration anti-ban Celery (Requirements 7.1-7.5):
+- worker_concurrency=1: Un seul worker pour envoi séquentiel
+- worker_prefetch_multiplier=1: Pas de prefetching
+- task_default_rate_limit="4/m": Maximum 4 messages par minute
+- task_soft_time_limit=300: 5 minutes par tâche (permet les pauses stratégiques)
+- task_time_limit=600: 10 minutes comme filet de sécurité
+
+COMPROMIS: Temps d'envoi plus long (~8h pour 1000 messages vs ~1h42 avant)
+mais risque de ban réduit de ~90%.
 """
 import logging
 from celery import Celery
@@ -66,14 +80,41 @@ celery_app.conf.update(
     task_acks_late=True,
     task_reject_on_worker_lost=True,
     
-    # Concurrence - optimisé pour production à grande échelle
-    # Note: Augmenté pour supporter plusieurs campagnes simultanées
-    # Le rate limiting est géré au niveau de l'envoi, pas du worker
-    worker_concurrency=4,  # Augmenté de 2 à 4 pour meilleure scalabilité
-    worker_prefetch_multiplier=2,  # Augmenté pour meilleure utilisation des workers
+    # ==========================================================================
+    # CONFIGURATION ANTI-BAN 2025 - CELERY SINGLE-THREADED MODE
+    # ==========================================================================
+    # Requirements: 7.1, 7.2, 7.3, 7.4, 7.5
+    # 
+    # OBJECTIF: Éviter les bannissements WhatsApp en:
+    # - Envoyant les messages séquentiellement (pas de parallélisme)
+    # - Limitant le débit à 4 messages par minute maximum
+    # - Permettant des délais longs entre messages (jusqu'à 5 minutes)
+    #
+    # COMPROMIS: Temps d'envoi plus long (~8h pour 1000 messages vs ~1h42 avant)
+    # mais risque de ban réduit de ~90%
+    # ==========================================================================
     
-    # Rate limiting global (25 messages par minute = ~0.42 msg/sec)
-    task_default_rate_limit=f"{settings.WHATSAPP_RATE_LIMIT_PER_MINUTE}/m",
+    # Concurrence - UN SEUL WORKER pour envoi séquentiel
+    # Requirements: 7.1 - Un seul worker = pas de parallélisme
+    worker_concurrency=1,
+    
+    # Prefetch - PAS DE PREFETCHING pour contrôle total du timing
+    # Requirements: 7.2 - Pas de prefetching = chaque message traité individuellement
+    worker_prefetch_multiplier=1,
+    
+    # Rate limiting global - MAXIMUM 4 MESSAGES PAR MINUTE
+    # Requirements: 7.3 - Limite stricte pour comportement humain
+    # Note: Les délais anti-ban dans message_tasks.py ajoutent des pauses supplémentaires
+    task_default_rate_limit="4/m",
+    
+    # Soft time limit - 300 SECONDES (5 minutes) par tâche
+    # Requirements: 7.5 - Plus de temps pour les délais longs anti-ban
+    # Permet les pauses stratégiques de 3-5 minutes sans timeout
+    task_soft_time_limit=300,
+    
+    # Hard time limit - 600 SECONDES (10 minutes) comme filet de sécurité
+    # Évite les tâches zombies tout en permettant les pauses longues
+    task_time_limit=600,
     
     # Queues et routing avec priorités
     task_queues=(
