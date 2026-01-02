@@ -1482,65 +1482,52 @@ class TestIsSafeToSendProperty:
         assert isinstance(result[1], str), \
             f"Expected second element to be str, got {type(result[1])}"
 
-    def test_blocks_during_night_time(self):
+    def test_no_night_time_blocking_disabled(self):
         """
         **Feature: whatsapp-ban-prevention**
-        **Validates: Requirements 4.2**
+        **Validates: Requirements 4.2 (DÉSACTIVÉ)**
         
-        is_safe_to_send should block during night time (23h-6h).
+        DÉSACTIVÉ: is_safe_to_send ne bloque plus pendant les heures de nuit
+        car is_night_time() retourne toujours False.
+        L'envoi 24h/24 est maintenant activé.
         """
-        from unittest.mock import MagicMock, patch
-        from datetime import datetime
+        from unittest.mock import MagicMock
         from app.tasks.message_tasks import is_safe_to_send
         
         # Create mock Redis client
         mock_redis = MagicMock()
         mock_redis.get.return_value = None
         
-        # Test night time hours
-        night_hours = [23, 0, 1, 2, 3, 4, 5]
+        # Test that sending is allowed at any hour (night time blocking disabled)
+        # No need to mock datetime since is_night_time() always returns False
+        can_send, reason = is_safe_to_send(mock_redis, 100)
         
-        for hour in night_hours:
-            mock_datetime = datetime(2025, 1, 1, hour, 30, 0)
-            
-            with patch('app.tasks.message_tasks.datetime') as mock_dt:
-                mock_dt.now.return_value = mock_datetime
-                mock_dt.fromisoformat = datetime.fromisoformat
-                
-                can_send, reason = is_safe_to_send(mock_redis, 100)
-            
-            assert can_send is False, \
-                f"Expected can_send=False during night time (hour={hour})"
-            
-            assert "nuit" in reason.lower() or "night" in reason.lower(), \
-                f"Expected reason to mention night time, got '{reason}'"
+        # Should be allowed since night time blocking is disabled
+        assert can_send is True, \
+            f"Expected can_send=True (night blocking disabled), got {can_send}"
+        
+        assert reason == "OK", \
+            f"Expected reason='OK', got '{reason}'"
 
-    def test_allows_during_day_time(self):
+    def test_allows_sending_24h(self):
         """
         **Feature: whatsapp-ban-prevention**
-        **Validates: Requirements 4.2**
+        **Validates: Requirements 4.2 (DÉSACTIVÉ)**
         
-        is_safe_to_send should allow during day time (6h-22h).
+        is_safe_to_send permet l'envoi 24h/24 (pas de blocage nocturne).
         """
-        from unittest.mock import MagicMock, patch
-        from datetime import datetime
+        from unittest.mock import MagicMock
         from app.tasks.message_tasks import is_safe_to_send
         
         # Create mock Redis client
         mock_redis = MagicMock()
         mock_redis.get.return_value = None
         
-        # Test day time hour
-        mock_datetime = datetime(2025, 1, 1, 12, 0, 0)
-        
-        with patch('app.tasks.message_tasks.datetime') as mock_dt:
-            mock_dt.now.return_value = mock_datetime
-            mock_dt.fromisoformat = datetime.fromisoformat
-            
-            can_send, reason = is_safe_to_send(mock_redis, 100)
+        # Test that sending is allowed (no night time blocking)
+        can_send, reason = is_safe_to_send(mock_redis, 100)
         
         assert can_send is True, \
-            f"Expected can_send=True during day time, got {can_send}"
+            f"Expected can_send=True (24/7 sending enabled), got {can_send}"
         
         assert reason == "OK", \
             f"Expected reason='OK', got '{reason}'"
