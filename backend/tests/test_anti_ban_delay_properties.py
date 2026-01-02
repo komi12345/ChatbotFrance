@@ -633,161 +633,99 @@ positive_message_length_strategy = st.integers(min_value=1, max_value=5000)
 
 class TestNightTimeBlockingProperty:
     """
-    Property 6: Night Time Blocking
+    Property 6: Night Time Blocking (DÉSACTIVÉ)
     
-    *For any* time T where hour(T) ∈ [23, 24) ∪ [0, 6), the system SHALL
-    block sending and return a postponement message.
+    IMPORTANT: Le blocage nocturne a été DÉSACTIVÉ pour permettre l'envoi
+    de messages 24h/24. La fonction is_night_time() retourne maintenant
+    toujours False.
     
-    **Feature: whatsapp-ban-prevention, Property 6: Night Time Blocking**
-    **Validates: Requirements 4.2**
+    Ces tests vérifient que la fonction est bien désactivée et retourne
+    toujours False, quelle que soit l'heure.
+    
+    **Feature: whatsapp-ban-prevention, Property 6: Night Time Blocking (DISABLED)**
+    **Validates: Requirements 4.2 (DÉSACTIVÉ)**
     """
 
     @given(hour=night_time_hours_strategy)
-    def test_night_time_hours_return_true(self, hour: int):
+    def test_night_time_hours_return_false_disabled(self, hour: int):
         """
-        **Feature: whatsapp-ban-prevention, Property 6: Night Time Blocking**
-        **Validates: Requirements 4.2**
+        **Feature: whatsapp-ban-prevention, Property 6: Night Time Blocking (DISABLED)**
+        **Validates: Requirements 4.2 (DÉSACTIVÉ)**
         
-        For any hour in [23, 0, 1, 2, 3, 4, 5], is_night_time should return True.
+        DÉSACTIVÉ: is_night_time retourne toujours False pour permettre
+        l'envoi 24h/24. Même pendant les heures de nuit (23h-6h), la fonction
+        retourne False.
         """
-        from unittest.mock import patch
-        from datetime import datetime
         from app.tasks.message_tasks import is_night_time
         
-        # Mock datetime.now() to return a specific hour
-        mock_datetime = datetime(2025, 1, 1, hour, 30, 0)
+        result = is_night_time()
         
-        with patch('app.tasks.message_tasks.datetime') as mock_dt:
-            mock_dt.now.return_value = mock_datetime
-            
-            result = is_night_time()
-            
-            # Property: night time hours should return True
-            assert result is True, \
-                f"Expected True for hour {hour}, got {result}"
+        # Property: is_night_time always returns False (disabled)
+        assert result is False, \
+            f"Expected False (disabled) for hour {hour}, got {result}"
 
     @given(hour=day_time_hours_strategy)
     def test_day_time_hours_return_false(self, hour: int):
         """
-        **Feature: whatsapp-ban-prevention, Property 6: Night Time Blocking**
-        **Validates: Requirements 4.2**
+        **Feature: whatsapp-ban-prevention, Property 6: Night Time Blocking (DISABLED)**
+        **Validates: Requirements 4.2 (DÉSACTIVÉ)**
         
-        For any hour in [6, 7, ..., 22], is_night_time should return False.
+        Pour toutes les heures de jour, is_night_time retourne False.
         """
-        from unittest.mock import patch
-        from datetime import datetime
         from app.tasks.message_tasks import is_night_time
         
-        # Mock datetime.now() to return a specific hour
-        mock_datetime = datetime(2025, 1, 1, hour, 30, 0)
+        result = is_night_time()
         
-        with patch('app.tasks.message_tasks.datetime') as mock_dt:
-            mock_dt.now.return_value = mock_datetime
-            
-            result = is_night_time()
-            
-            # Property: day time hours should return False
-            assert result is False, \
-                f"Expected False for hour {hour}, got {result}"
+        # Property: day time hours should return False
+        assert result is False, \
+            f"Expected False for hour {hour}, got {result}"
 
-    def test_boundary_hour_23_is_night(self):
+    def test_function_always_returns_false(self):
         """
-        **Feature: whatsapp-ban-prevention, Property 6: Night Time Blocking**
-        **Validates: Requirements 4.2**
+        **Feature: whatsapp-ban-prevention, Property 6: Night Time Blocking (DISABLED)**
+        **Validates: Requirements 4.2 (DÉSACTIVÉ)**
         
-        Hour 23 (11 PM) should be considered night time.
+        Vérifie que is_night_time retourne toujours False (désactivé).
         """
-        from unittest.mock import patch
-        from datetime import datetime
         from app.tasks.message_tasks import is_night_time
         
-        mock_datetime = datetime(2025, 1, 1, 23, 0, 0)
-        
-        with patch('app.tasks.message_tasks.datetime') as mock_dt:
-            mock_dt.now.return_value = mock_datetime
-            
+        # Test multiple times to ensure consistency
+        for _ in range(10):
             result = is_night_time()
-            assert result is True, "Hour 23 should be night time"
+            assert result is False, "is_night_time should always return False (disabled)"
 
-    def test_boundary_hour_6_is_day(self):
+    def test_24h_sending_enabled(self):
         """
-        **Feature: whatsapp-ban-prevention, Property 6: Night Time Blocking**
-        **Validates: Requirements 4.2**
+        **Feature: whatsapp-ban-prevention, Property 6: Night Time Blocking (DISABLED)**
+        **Validates: Requirements 4.2 (DÉSACTIVÉ)**
         
-        Hour 6 (6 AM) should be considered day time.
+        Vérifie que l'envoi 24h/24 est activé (pas de blocage nocturne).
         """
-        from unittest.mock import patch
-        from datetime import datetime
         from app.tasks.message_tasks import is_night_time
         
-        mock_datetime = datetime(2025, 1, 1, 6, 0, 0)
-        
-        with patch('app.tasks.message_tasks.datetime') as mock_dt:
-            mock_dt.now.return_value = mock_datetime
-            
-            result = is_night_time()
-            assert result is False, "Hour 6 should be day time"
-
-    def test_boundary_hour_5_is_night(self):
-        """
-        **Feature: whatsapp-ban-prevention, Property 6: Night Time Blocking**
-        **Validates: Requirements 4.2**
-        
-        Hour 5 (5 AM) should be considered night time.
-        """
-        from unittest.mock import patch
-        from datetime import datetime
-        from app.tasks.message_tasks import is_night_time
-        
-        mock_datetime = datetime(2025, 1, 1, 5, 59, 59)
-        
-        with patch('app.tasks.message_tasks.datetime') as mock_dt:
-            mock_dt.now.return_value = mock_datetime
-            
-            result = is_night_time()
-            assert result is True, "Hour 5 should be night time"
-
-    def test_boundary_hour_22_is_day(self):
-        """
-        **Feature: whatsapp-ban-prevention, Property 6: Night Time Blocking**
-        **Validates: Requirements 4.2**
-        
-        Hour 22 (10 PM) should be considered day time.
-        """
-        from unittest.mock import patch
-        from datetime import datetime
-        from app.tasks.message_tasks import is_night_time
-        
-        mock_datetime = datetime(2025, 1, 1, 22, 59, 59)
-        
-        with patch('app.tasks.message_tasks.datetime') as mock_dt:
-            mock_dt.now.return_value = mock_datetime
-            
-            result = is_night_time()
-            assert result is False, "Hour 22 should be day time"
+        # The function should always return False, enabling 24/7 sending
+        result = is_night_time()
+        assert result is False, "24/7 sending should be enabled (is_night_time returns False)"
 
     @given(hour=all_hours_strategy)
     def test_is_night_time_returns_bool(self, hour: int):
         """
-        **Feature: whatsapp-ban-prevention, Property 6: Night Time Blocking**
-        **Validates: Requirements 4.2**
+        **Feature: whatsapp-ban-prevention, Property 6: Night Time Blocking (DISABLED)**
+        **Validates: Requirements 4.2 (DÉSACTIVÉ)**
         
-        is_night_time should always return a boolean.
+        is_night_time doit toujours retourner un booléen (False).
         """
-        from unittest.mock import patch
-        from datetime import datetime
         from app.tasks.message_tasks import is_night_time
         
-        mock_datetime = datetime(2025, 1, 1, hour, 30, 0)
+        result = is_night_time()
         
-        with patch('app.tasks.message_tasks.datetime') as mock_dt:
-            mock_dt.now.return_value = mock_datetime
-            
-            result = is_night_time()
-            
-            # Property: result should be a boolean
-            assert isinstance(result, bool), \
-                f"Expected bool for hour {hour}, got {type(result)}"
+        # Property: result should be a boolean
+        assert isinstance(result, bool), \
+            f"Expected bool for hour {hour}, got {type(result)}"
+        
+        # Property: result should always be False (disabled)
+        assert result is False, \
+            f"Expected False (disabled) for hour {hour}, got {result}"
 
 
 class TestSimulateHumanBehaviorProperty:

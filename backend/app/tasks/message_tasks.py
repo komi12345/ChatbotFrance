@@ -408,18 +408,19 @@ def is_night_time() -> bool:
     """
     Vérifie si l'heure actuelle est entre 23h et 6h (heures de nuit).
     
-    Pendant les heures de nuit, l'envoi de messages doit être bloqué
-    pour simuler un comportement humain naturel (personne n'envoie
-    de messages professionnels à 3h du matin).
+    DÉSACTIVÉ: Cette fonction retourne toujours False pour permettre
+    l'envoi de messages 24h/24. Le blocage nocturne a été désactivé
+    car le serveur Render est en UTC et cela causait des problèmes
+    de synchronisation avec le fuseau horaire local.
     
     Returns:
-        True si l'heure actuelle est entre 23h et 6h (exclusif), False sinon
+        False (toujours) - blocage nocturne désactivé
     
-    Validates: Requirements 4.2
+    Validates: Requirements 4.2 (DÉSACTIVÉ)
     """
-    current_hour = datetime.now().hour
-    # Night time: 23:00 to 05:59 (hour >= 23 OR hour < 6)
-    return current_hour >= 23 or current_hour < 6
+    # DÉSACTIVÉ: Retourne toujours False pour permettre l'envoi 24h/24
+    # L'ancien code vérifiait: current_hour >= 23 or current_hour < 6
+    return False
 
 
 def get_message_length_delay(message_length: int) -> float:
